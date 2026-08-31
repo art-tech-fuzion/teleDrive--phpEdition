@@ -22,6 +22,7 @@ class StorageEngine {
     private string $storageChannel;
     const COMPACTION_THRESHOLD = 50;
     const MANIFEST_FILENAME = 'master_manifest.json';
+    const CACHE_FILE = 'index_cache.json';
 
     public function __construct(?TelegramClient $telegram = null) {
         $this->telegram = $telegram ?: new TelegramClient();
@@ -37,10 +38,17 @@ class StorageEngine {
     }
 
     /**
-     * Load the current database / filesystem index
-     * Reads pinned master_manifest.json + uncheckpointed delta messages
+     * Path to local index cache to guarantee instant sub-second dashboard rendering
      */
-    public function getFileSystemIndex(): array {
+    private function getCachePath(): string {
+        return TEMP_CHUNK_DIR . '/' . self::CACHE_FILE;
+    }
+
+    /**
+     * Load current filesystem index
+     * Prioritizes fast local cache, falls back to pinned manifest from Index Channel
+     */
+    public function getFileSystemIndex(bool $forceRemote = false): array {
         if (!$this->isConfigured()) {
             return [
                 'items'            => [],
@@ -50,18 +58,28 @@ class StorageEngine {
             ];
         }
 
+        $cacheFile = $this->getCachePath();
+
+        // 1. Check local cache first for instant sub-second response
+        if (!$forceRemote && file_exists($cacheFile)) {
+            $cached = json_decode(@file_get_contents($cacheFile), true);
+            if (is_array($cached) && isset($cached['items'])) {
+                return $cached;
+            }
+        }
+
         $items = [];
         $pinnedMsgId = 0;
         $pinnedDocFileId = null;
+        $deltaCount = 0;
 
-        // 1. Fetch channel metadata to find pinned message
+        // 2. Fetch pinned message from Telegram Index Channel
         try {
             $chatInfo = $this->telegram->getChat($this->indexChannel);
             if (isset($chatInfo['pinned_message'])) {
                 $pinnedMsg = $chatInfo['pinned_message'];
-                $pinnedMsgId = $pinnedMsg['message_id'];
+                $pinnedMsgId = (int)$pinnedMsg['message_id'];
                 
-                // If it's a document (master_manifest.json)
                 if (isset($pinnedMsg['document']) && 
                     str_contains(strtolower($pinnedMsg['document']['file_name'] ?? ''), 'manifest')) {
                     $pinnedDocFileId = $pinnedMsg['document']['file_id'];
@@ -71,7 +89,7 @@ class StorageEngine {
             error_log("Failed to fetch getChat for index channel: " . $e->getMessage());
         }
 
-        // 2. If pinned manifest document exists, download and parse
+        // 3. Download and parse pinned master_manifest.json
         if ($pinnedDocFileId) {
             try {
                 $manifestJson = $this->telegram->downloadFileContent($pinnedDocFileId);
@@ -80,21 +98,24 @@ class StorageEngine {
                     foreach ($manifestData['items'] as $item) {
                         $items[$item['id']] = $item;
                     }
+                    $deltaCount = (int)($manifestData['delta_count'] ?? 0);
                 }
             } catch (Exception $e) {
                 error_log("Failed to load master manifest content: " . $e->getMessage());
             }
         }
 
-        // 3. In Telegram Bot API without MTProto, bots receive updates or scan delta messages.
-        // We track deltas by scanning messages or keeping cached delta count in the manifest.
-        // For individual message updates, we also parse index messages.
-        
-        return [
+        $indexData = [
             'items'            => array_values($items),
             'pinned_message_id'=> $pinnedMsgId,
+            'delta_count'      => $deltaCount,
             'total_items'      => count($items)
         ];
+
+        // Save local cache
+        @file_put_contents($cacheFile, json_encode($indexData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+        return $indexData;
     }
 
     /**
@@ -128,7 +149,7 @@ class StorageEngine {
             'size'        => (int)$fileData['size'],
             'mime_type'   => $fileData['mime_type'] ?? 'application/octet-stream',
             'parent_id'   => empty($fileData['parent_id']) ? 'root' : $fileData['parent_id'],
-            'chunks'      => $fileData['chunks'] ?? [], // array of ['part' => 1, 'file_id' => ..., 'message_id' => ..., 'size' => ...]
+            'chunks'      => $fileData['chunks'] ?? [],
             'created_at'  => time(),
             'updated_at'  => time()
         ];
@@ -137,19 +158,47 @@ class StorageEngine {
     }
 
     /**
-     * Post a single metadata JSON message to the Index Channel & trigger compaction if needed
+     * Post a single metadata JSON message to Index Channel & trigger 50-message compaction
      */
     private function saveMetadataEntry(array $metadata): array {
         $jsonPayload = json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         
-        // Post text message to Index Channel
+        // 1. Post individual JSON message to Telegram Index Channel
         $tgResponse = $this->telegram->sendMessage($this->indexChannel, "<code>" . htmlspecialchars($jsonPayload) . "</code>");
-        $messageId = $tgResponse['message_id'];
-
+        $messageId = (int)$tgResponse['message_id'];
         $metadata['index_message_id'] = $messageId;
 
-        // Perform instant checkpoint/compaction update
-        $this->recordEntryAndCheckpoint($metadata);
+        // 2. Update filesystem index
+        $index = $this->getFileSystemIndex();
+        $items = $index['items'];
+        $deltaCount = (int)($index['delta_count'] ?? 0) + 1;
+
+        // Merge / Upsert item
+        $found = false;
+        foreach ($items as &$it) {
+            if ($it['id'] === $metadata['id']) {
+                $it = $metadata;
+                $found = true;
+                break;
+            }
+        }
+        if (!$found) {
+            $items[] = $metadata;
+        }
+
+        // 3. Check 50-Message Compaction Threshold
+        if ($deltaCount >= self::COMPACTION_THRESHOLD || empty($index['pinned_message_id'])) {
+            // Rebuild, upload master_manifest.json document and PIN it
+            $newPinnedId = $this->rebuildAndPinManifest($items);
+            $index['pinned_message_id'] = $newPinnedId;
+            $deltaCount = 0; // Reset delta counter after compaction checkpoint
+        }
+
+        // Save updated cache
+        $index['items'] = array_values($items);
+        $index['delta_count'] = $deltaCount;
+        $index['total_items'] = count($items);
+        @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
         return $metadata;
     }
@@ -176,7 +225,7 @@ class StorageEngine {
             throw new Exception("Item with ID {$id} not found.");
         }
 
-        // In-place edit of the index message if message_id is available
+        // In-place edit of the index message if available
         if (isset($target['index_message_id']) && $target['index_message_id'] > 0) {
             try {
                 $jsonPayload = json_encode($target, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -186,8 +235,9 @@ class StorageEngine {
             }
         }
 
-        // Rebuild and save updated manifest
-        $this->rebuildManifest($items);
+        // Update cache and rebuild manifest if needed
+        $index['items'] = array_values($items);
+        @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
         return $target;
     }
@@ -226,8 +276,14 @@ class StorageEngine {
             }
         }
 
-        // Rebuild and pin updated manifest
-        $this->rebuildManifest($remainingItems);
+        // Rebuild and pin updated manifest checkpoint
+        $newPinnedId = $this->rebuildAndPinManifest($remainingItems);
+
+        $index['items'] = array_values($remainingItems);
+        $index['pinned_message_id'] = $newPinnedId;
+        $index['delta_count'] = 0;
+        $index['total_items'] = count($remainingItems);
+        @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
         return [
             'deleted_count' => $deletedCount,
@@ -253,7 +309,7 @@ class StorageEngine {
      */
     public function uploadStorageChunk(string $tempFilePath, string $chunkFilename, string $caption = ''): array {
         $response = $this->telegram->sendDocument($this->storageChannel, $tempFilePath, $chunkFilename, $caption);
-        $messageId = $response['message_id'];
+        $messageId = (int)$response['message_id'];
         $document = $response['document'];
 
         return [
@@ -266,36 +322,14 @@ class StorageEngine {
     }
 
     /**
-     * Record new entry into the master manifest and trigger checkpointing compaction
-     */
-    private function recordEntryAndCheckpoint(array $newItem): void {
-        $index = $this->getFileSystemIndex();
-        $items = $index['items'];
-        
-        // Remove existing item with same ID if any, and append new
-        $found = false;
-        foreach ($items as &$it) {
-            if ($it['id'] === $newItem['id']) {
-                $it = $newItem;
-                $found = true;
-                break;
-            }
-        }
-        if (!$found) {
-            $items[] = $newItem;
-        }
-
-        $this->rebuildManifest($items);
-    }
-
-    /**
      * Generate master_manifest.json, upload as document to Index Channel and PIN it
      */
-    public function rebuildManifest(array $items): void {
+    public function rebuildAndPinManifest(array $items): int {
         $manifest = [
             'version'      => 1,
             'generated_at' => time(),
             'total_items'  => count($items),
+            'delta_count'  => 0,
             'items'        => array_values($items)
         ];
 
@@ -303,19 +337,20 @@ class StorageEngine {
         $tempPath = TEMP_CHUNK_DIR . '/' . self::MANIFEST_FILENAME;
         file_put_contents($tempPath, $jsonStr);
 
+        $newMsgId = 0;
         try {
-            // Upload to Index Channel
+            // 1. Upload new manifest document to Index Channel
             $docRes = $this->telegram->sendDocument($this->indexChannel, $tempPath, self::MANIFEST_FILENAME, 'TeleDrive Master Manifest Checkpoint');
-            $newMsgId = $docRes['message_id'];
+            $newMsgId = (int)$docRes['message_id'];
 
-            // Pin new manifest
+            // 2. Pin the new manifest document message
             $this->telegram->pinChatMessage($this->indexChannel, $newMsgId);
-
-            // Clean up old pins if desired
         } catch (Exception $e) {
             error_log("Failed to rebuild and pin manifest: " . $e->getMessage());
         } finally {
             @unlink($tempPath);
         }
+
+        return $newMsgId;
     }
 }

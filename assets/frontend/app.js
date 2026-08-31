@@ -84,9 +84,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // 5. Load Folder Items
+    // 5. Load Folder Items with Skeleton Buffer
     async function loadFolder(folderId, search = '') {
         state.currentFolderId = folderId;
+        
+        // Show instant skeleton buffer to prevent empty flash
+        renderSkeletonBuffer();
+        renderBreadcrumbs();
+
         try {
             const url = `api/index.php?action=files.list&parent_id=${encodeURIComponent(folderId)}&search=${encodeURIComponent(search)}`;
             const res = await fetch(url);
@@ -95,13 +100,27 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.success) {
                 state.items = data.items || [];
                 renderItems();
-                renderBreadcrumbs();
             } else {
                 TeleDrive.toast(data.error || 'Failed to load files.', 'error');
             }
         } catch (err) {
             console.error('Error loading files:', err);
             TeleDrive.toast(`Error loading files: ${err.message || err}`, 'error');
+        }
+    }
+
+    function renderSkeletonBuffer() {
+        emptyState.style.display = 'none';
+        if (state.viewMode === 'grid') {
+            gridView.style.display = 'grid';
+            listView.style.display = 'none';
+            gridView.innerHTML = Array(6).fill(0).map(() => `
+                <div class="td-skeleton-card td-skeleton-shimmer">
+                    <div class="td-skeleton-preview"></div>
+                    <div class="td-skeleton-line"></div>
+                    <div class="td-skeleton-line-sm"></div>
+                </div>
+            `).join('');
         }
     }
 
@@ -481,6 +500,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (completeResult.success) {
                 fillBar.style.width = '100%';
                 TeleDrive.toast(`Uploaded: ${file.name}`, 'success');
+                setTimeout(() => {
+                    qItem.style.opacity = '0';
+                    setTimeout(() => qItem.remove(), 300);
+                }, 1500);
             } else {
                 throw new Error(completeResult.error || 'Failed to complete Telegram storage upload');
             }
