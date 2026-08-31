@@ -279,6 +279,30 @@ try {
             Helpers::success(['item' => $updated], 'Item renamed successfully.');
             break;
 
+        case 'items.move':
+            Auth::requireAuth();
+            $id = $_POST['id'] ?? '';
+            $destParentId = $_POST['parent_id'] ?? 'root';
+
+            if (empty($id)) {
+                Helpers::error('Item ID is required for moving.');
+            }
+
+            $engine = new StorageEngine();
+            $moved = $engine->moveItem($id, $destParentId);
+            Helpers::success(['item' => $moved], 'Item moved successfully.');
+            break;
+
+        case 'folders.list':
+            Auth::requireAuth();
+            $engine = new StorageEngine();
+            $index = $engine->getFileSystemIndex();
+            $folders = array_filter($index['items'] ?? [], function($it) {
+                return ($it['type'] ?? '') === 'folder';
+            });
+            Helpers::success(['folders' => array_values($folders)]);
+            break;
+
         case 'items.delete':
             Auth::requireAuth();
             $id = $_POST['id'] ?? '';

@@ -199,6 +199,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 <div class="td-grid-card-actions">
                     ${item.type === 'file' ? '<button class="td-btn-icon td-btn-download" title="Download">⬇️</button>' : ''}
+                    <button class="td-btn-icon td-btn-move" title="Move to Folder">📂</button>
                     <button class="td-btn-icon td-btn-rename" title="Rename">✏️</button>
                     <button class="td-btn-icon td-btn-delete" title="Delete">🗑️</button>
                 </div>
@@ -217,6 +218,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     startControlledDownload(item);
                 };
             }
+
+            card.querySelector('.td-btn-move').onclick = (e) => {
+                e.stopPropagation();
+                handleMove(item);
+            };
 
             card.querySelector('.td-btn-rename').onclick = (e) => {
                 e.stopPropagation();
@@ -250,6 +256,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>
                     <div class="td-table-actions">
                         ${item.type === 'file' ? '<button class="td-btn-icon td-btn-download" title="Download">⬇️</button>' : ''}
+                        <button class="td-btn-icon td-btn-move" title="Move to Folder">📂</button>
                         <button class="td-btn-icon td-btn-rename" title="Rename">✏️</button>
                         <button class="td-btn-icon td-btn-delete" title="Delete">🗑️</button>
                     </div>
@@ -267,6 +274,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     startControlledDownload(item);
                 };
             }
+
+            tr.querySelector('.td-btn-move').onclick = (e) => {
+                e.stopPropagation();
+                handleMove(item);
+            };
 
             tr.querySelector('.td-btn-rename').onclick = (e) => {
                 e.stopPropagation();
@@ -422,7 +434,123 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 12. Delete Item (Cascade)
+    // 12. Move Item to Destination Folder Modal
+    async function handleMove(item) {
+        // Fetch all available folders
+        try {
+            const res = await fetch('api/index.php?action=folders.list');
+            const data = await res.json();
+            const allFolders = (data.folders || []).filter(f => f.id !== item.id);
+
+            const overlay = document.createElement('div');
+            overlay.className = 'td-modal-overlay';
+            overlay.style.cssText = `
+                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                background: var(--bg-overlay, rgba(11, 15, 23, 0.8));
+                backdrop-filter: blur(6px);
+                display: flex; align-items: center; justify-content: center;
+                z-index: 9998; opacity: 0;
+                transition: opacity 0.2s ease;
+            `;
+
+            const modalBox = document.createElement('div');
+            modalBox.style.cssText = `
+                background: var(--bg-surface, #1e293b);
+                border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+                border-radius: var(--radius-lg, 12px);
+                padding: 24px; width: 90%; max-width: 440px;
+                box-shadow: var(--shadow-xl, 0 20px 45px rgba(0,0,0,0.5));
+                transform: scale(0.95);
+                transition: transform 0.2s ease;
+            `;
+
+            modalBox.innerHTML = `
+                <h3 style="font-size: var(--font-size-lg, 18px); font-weight: 600; margin-bottom: 6px; color: var(--text-main);">Move "${escapeHtml(item.name)}"</h3>
+                <p style="font-size: var(--font-size-sm, 14px); color: var(--text-secondary); margin-bottom: 16px;">Select destination folder:</p>
+                <div style="margin-bottom: 20px;">
+                    <select id="td-move-dest-select" style="
+                        width: 100%; padding: 10px 14px;
+                        background: var(--bg-body, #0b0f17);
+                        border: 1px solid var(--border-color, rgba(255,255,255,0.15));
+                        border-radius: var(--radius-md, 8px);
+                        color: var(--text-main, #f8fafc);
+                        font-size: var(--font-size-sm, 14px);
+                        outline: none;
+                    ">
+                        <option value="root" ${item.parent_id === 'root' ? 'disabled' : ''}>📁 / (Root - My Drive)</option>
+                        ${allFolders.map(f => `
+                            <option value="${f.id}" ${item.parent_id === f.id ? 'disabled' : ''}>
+                                📁 ${escapeHtml(f.name)} ${item.parent_id === f.id ? '(Current Folder)' : ''}
+                            </option>
+                        `).join('')}
+                    </select>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <button id="td-move-cancel" style="
+                        background: transparent;
+                        border: 1px solid var(--border-color);
+                        color: var(--text-main);
+                        padding: 8px 16px; border-radius: var(--radius-sm);
+                        cursor: pointer; font-size: 13px; font-weight: 500;
+                    ">Cancel</button>
+                    <button id="td-move-confirm" style="
+                        background: var(--color-primary, #3b82f6);
+                        border: none; color: #ffffff;
+                        padding: 8px 20px; border-radius: var(--radius-sm);
+                        cursor: pointer; font-size: 13px; font-weight: 600;
+                    ">Move Here</button>
+                </div>
+            `;
+
+            overlay.appendChild(modalBox);
+            document.body.appendChild(overlay);
+
+            requestAnimationFrame(() => {
+                overlay.style.opacity = '1';
+                modalBox.style.transform = 'scale(1)';
+            });
+
+            const cleanup = () => {
+                overlay.style.opacity = '0';
+                modalBox.style.transform = 'scale(0.95)';
+                setTimeout(() => overlay.remove(), 200);
+            };
+
+            modalBox.querySelector('#td-move-cancel').onclick = cleanup;
+
+            modalBox.querySelector('#td-move-confirm').onclick = async () => {
+                const select = modalBox.querySelector('#td-move-dest-select');
+                const destId = select.value;
+                cleanup();
+
+                TeleDrive.toast(`Moving "${item.name}"...`, 'info', 2000);
+                try {
+                    const formData = new FormData();
+                    formData.append('action', 'items.move');
+                    formData.append('id', item.id);
+                    formData.append('parent_id', destId);
+
+                    const moveRes = await fetch('api/index.php', { method: 'POST', body: formData });
+                    const moveData = await moveRes.json();
+
+                    if (moveData.success) {
+                        TeleDrive.toast(`Moved "${item.name}" successfully.`, 'success');
+                        await loadFolder(state.currentFolderId);
+                    } else {
+                        TeleDrive.toast(moveData.error || 'Failed to move item.', 'error');
+                    }
+                } catch (err) {
+                    console.error('Error moving item:', err);
+                    TeleDrive.toast('Error moving item.', 'error');
+                }
+            };
+        } catch (err) {
+            console.error('Error loading folders for move:', err);
+            TeleDrive.toast('Could not load destination folders.', 'error');
+        }
+    }
+
+    // 13. Delete Item (Cascade)
     async function handleDelete(item) {
         const isFolder = item.type === 'folder';
         const confirmed = await TeleDrive.confirm({

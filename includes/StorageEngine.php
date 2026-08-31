@@ -46,7 +46,7 @@ class StorageEngine {
 
     /**
      * Load current filesystem index
-     * Prioritizes fast local cache, falls back to pinned manifest from Index Channel
+     * Prioritizes fast local cache, falls back to pinned manifest from Index Channel + subsequent delta messages
      */
     public function getFileSystemIndex(bool $forceRemote = false): array {
         if (!$this->isConfigured()) {
@@ -73,7 +73,7 @@ class StorageEngine {
         $pinnedDocFileId = null;
         $deltaCount = 0;
 
-        // 2. Fetch pinned message from Telegram Index Channel
+        // 2. Fetch current pinned message from Telegram Index Channel
         try {
             $chatInfo = $this->telegram->getChat($this->indexChannel);
             if (isset($chatInfo['pinned_message'])) {
@@ -105,7 +105,7 @@ class StorageEngine {
             }
         }
 
-        // 4. If remote fetch succeeded or returned items, update local cache
+        // 4. Update local cache with latest data
         $indexData = [
             'items'            => array_values($items),
             'pinned_message_id'=> $pinnedMsgId,
@@ -241,6 +241,64 @@ class StorageEngine {
         }
 
         // Update local cache without re-uploading manifest document for single renames
+        $index['items'] = array_values($items);
+        @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+        return $target;
+    }
+
+    /**
+     * Move a file or folder into a different destination folder
+     */
+    public function moveItem(string $id, string $destinationParentId): array {
+        $index = $this->getFileSystemIndex();
+        $items = $index['items'];
+        $target = null;
+        $destParentId = empty($destinationParentId) ? 'root' : $destinationParentId;
+
+        // Prevent moving an item into itself
+        if ($id === $destParentId) {
+            throw new Exception("Cannot move an item inside itself.");
+        }
+
+        // If destination is not root, ensure destination folder exists
+        if ($destParentId !== 'root') {
+            $destExists = false;
+            foreach ($items as $item) {
+                if ($item['id'] === $destParentId && $item['type'] === 'folder') {
+                    $destExists = true;
+                    break;
+                }
+            }
+            if (!$destExists) {
+                throw new Exception("Destination folder not found.");
+            }
+        }
+
+        foreach ($items as &$item) {
+            if ($item['id'] === $id) {
+                $item['parent_id'] = $destParentId;
+                $item['updated_at'] = time();
+                $target = $item;
+                break;
+            }
+        }
+
+        if (!$target) {
+            throw new Exception("Item with ID {$id} not found.");
+        }
+
+        // In-place edit of the individual index message in Telegram Index Channel
+        if (isset($target['index_message_id']) && $target['index_message_id'] > 0) {
+            try {
+                $jsonPayload = json_encode($target, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                $this->telegram->editMessageText($this->indexChannel, (int)$target['index_message_id'], "<code>" . htmlspecialchars($jsonPayload) . "</code>");
+            } catch (Exception $e) {
+                error_log("Failed to edit message text for moveItem: " . $e->getMessage());
+            }
+        }
+
+        // Update local cache
         $index['items'] = array_values($items);
         @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
