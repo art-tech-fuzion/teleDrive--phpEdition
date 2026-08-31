@@ -4,14 +4,11 @@ Options -Indexes
 # Enable UTF-8 encoding
 AddDefaultCharset UTF-8
 
-# Protect sensitive files
+# Protect sensitive files from direct browser access
 <FilesMatch "^\.env|\.git">
     Order allow,deny
     Deny from all
 </FilesMatch>
 
-<IfModule mod_headers.c>
-    Header set X-Content-Type-Options "nosniff"
-    Header set X-Frame-Options "SAMEORIGIN"
-    Header set X-XSS-Protection "1; mode=block"
-</IfModule>
+# Note: Security headers (X-Frame-Options: DENY, X-Content-Type-Options, CSP, etc.)
+# are set exclusively by PHP in api/index.php to avoid duplicate/conflicting headers.

@@ -14,10 +14,17 @@ if (!defined('TELEDRIVE_INIT')) {
 class TelegramClient {
     private string $botToken;
     private string $apiUrl;
+    private mixed $ch = null;
 
     public function __construct(?string $token = null) {
         $this->botToken = $token ?: TELEGRAM_BOT_TOKEN;
         $this->apiUrl = "https://api.telegram.org/bot{$this->botToken}/";
+    }
+
+    public function __destruct() {
+        if ($this->ch && is_resource($this->ch)) {
+            curl_close($this->ch);
+        }
     }
 
     /**
@@ -29,16 +36,21 @@ class TelegramClient {
         }
 
         $url = $this->apiUrl . $method;
-        $ch = curl_init();
+        
+        if (!$this->ch || !is_resource($this->ch)) {
+            $this->ch = curl_init();
+            curl_setopt($this->ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($this->ch, CURLOPT_SSL_VERIFYPEER, true);
+            curl_setopt($this->ch, CURLOPT_CONNECTTIMEOUT, 10);
+            curl_setopt($this->ch, CURLOPT_TIMEOUT, 45);
+            curl_setopt($this->ch, CURLOPT_TCP_KEEPALIVE, 1);
+            curl_setopt($this->ch, CURLOPT_FORBID_REUSE, 0);
+        }
 
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 60);
+        curl_setopt($this->ch, CURLOPT_URL, $url);
 
         if ($httpMethod === 'POST') {
-            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($this->ch, CURLOPT_POST, true);
             // If params contain CURLFile or binary, send as multipart form-data
             $hasFile = false;
             foreach ($params as $param) {
@@ -49,18 +61,17 @@ class TelegramClient {
             }
 
             if ($hasFile) {
-                curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
+                curl_setopt($this->ch, CURLOPT_POSTFIELDS, $params);
             } else {
-                curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($params));
+                curl_setopt($this->ch, CURLOPT_POSTFIELDS, http_build_query($params));
             }
+        } else {
+            curl_setopt($this->ch, CURLOPT_HTTPGET, true);
         }
 
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-        if (PHP_VERSION_ID < 80000) {
-            curl_close($ch);
-        }
+        $response = curl_exec($this->ch);
+        $httpCode = curl_getinfo($this->ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($this->ch);
 
         if ($response === false) {
             throw new Exception("Telegram cURL Error: {$curlError}");
@@ -99,6 +110,95 @@ class TelegramClient {
             'from_chat_id' => $fromChatId,
             'message_id'   => $messageId
         ]);
+    }
+
+    /**
+     * High-speed parallel concurrent fetch of multiple messages using curl_multi
+     * Forwards all requested IDs concurrently and cleans up temporary forwarded copies in parallel.
+     */
+    public function fetchMessagesBatch(string|int $targetChatId, string|int $sourceChatId, array $messageIds): array {
+        if (empty($messageIds) || empty($this->botToken)) {
+            return [];
+        }
+
+        $fwdUrl = $this->apiUrl . 'forwardMessage';
+        $mh = curl_multi_init();
+        $handles = [];
+
+        foreach ($messageIds as $id) {
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $fwdUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query([
+                'chat_id'      => $targetChatId,
+                'from_chat_id' => $sourceChatId,
+                'message_id'   => $id
+            ]));
+            curl_multi_add_handle($mh, $ch);
+            $handles[$id] = $ch;
+        }
+
+        $running = null;
+        do {
+            curl_multi_exec($mh, $running);
+            curl_multi_select($mh, 0.2);
+        } while ($running > 0);
+
+        $messages = [];
+        $delHandles = [];
+        $delMh = curl_multi_init();
+        $delUrl = $this->apiUrl . 'deleteMessage';
+
+        foreach ($handles as $id => $ch) {
+            $content = curl_multi_getcontent($ch);
+            curl_multi_remove_handle($mh, $ch);
+            if (PHP_VERSION_ID < 80000) {
+                curl_close($ch);
+            }
+            $data = json_decode($content, true);
+            if (!empty($data['ok']) && isset($data['result']['message_id'])) {
+                $messages[$id] = $data['result'];
+
+                // Enqueue parallel deletion of the forwarded copy in target chat
+                $dch = curl_init();
+                curl_setopt($dch, CURLOPT_URL, $delUrl);
+                curl_setopt($dch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($dch, CURLOPT_SSL_VERIFYPEER, true);
+                curl_setopt($dch, CURLOPT_CONNECTTIMEOUT, 8);
+                curl_setopt($dch, CURLOPT_TIMEOUT, 15);
+                curl_setopt($dch, CURLOPT_POST, true);
+                curl_setopt($dch, CURLOPT_POSTFIELDS, http_build_query([
+                    'chat_id'    => $targetChatId,
+                    'message_id' => $data['result']['message_id']
+                ]));
+                curl_multi_add_handle($delMh, $dch);
+                $delHandles[] = $dch;
+            }
+        }
+        curl_multi_close($mh);
+
+        // Execute parallel cleanup deletions
+        if (!empty($delHandles)) {
+            $delRunning = null;
+            do {
+                curl_multi_exec($delMh, $delRunning);
+                curl_multi_select($delMh, 0.2);
+            } while ($delRunning > 0);
+
+            foreach ($delHandles as $dch) {
+                curl_multi_remove_handle($delMh, $dch);
+                if (PHP_VERSION_ID < 80000) {
+                    curl_close($dch);
+                }
+            }
+        }
+        curl_multi_close($delMh);
+
+        return $messages;
     }
 
     /**

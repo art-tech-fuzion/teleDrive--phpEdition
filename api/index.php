@@ -211,7 +211,8 @@ try {
             $filename    = Helpers::sanitizeFilename($_POST['filename'] ?? 'file');
             $parentId    = $_POST['parent_id'] ?? 'root';
             $fileSize    = (int)($_POST['size'] ?? 0);
-            $mimeType    = $_POST['mime_type'] ?? 'application/octet-stream';
+            // Note: client-submitted mime_type is intentionally IGNORED for security.
+            // Actual MIME type is detected server-side from file bytes after assembly.
             $totalChunks = (int)($_POST['total_chunks'] ?? 1);
 
             // Validate parent_id: must be 'root' or a known folder ID
@@ -259,6 +260,18 @@ try {
             }
             fclose($outHandle);
 
+            // Detect actual MIME type from file bytes (server-side, ignore client value)
+            $detectedMime = mime_content_type($assembledFile) ?: 'application/octet-stream';
+            // Safety: force download disposition for dangerous types to prevent XSS
+            $inlineSafeMimes = [
+                'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+                'video/mp4', 'video/webm', 'audio/mpeg', 'audio/ogg', 'audio/wav',
+                'application/pdf', 'text/plain'
+            ];
+            if (!in_array($detectedMime, $inlineSafeMimes, true)) {
+                $detectedMime = 'application/octet-stream';
+            }
+
             // Upload assembled file to Telegram Storage Channel
             $tgChunk = $engine->uploadStorageChunk($assembledFile, $filename, "TeleDrive File: {$filename}");
             $telegramChunks[] = [
@@ -271,11 +284,11 @@ try {
             // Cleanup local temp files
             Helpers::removeDir($uploadSessionDir);
 
-            // Register file in Index Channel
+            // Register file in Index Channel with server-detected MIME type
             $newEntry = $engine->createFileEntry([
                 'name'      => $filename,
                 'size'      => $fileSize ?: filesize($assembledFile),
-                'mime_type' => $mimeType,
+                'mime_type' => $detectedMime,
                 'parent_id' => $parentId,
                 'chunks'    => $telegramChunks,
             ]);
@@ -307,10 +320,18 @@ try {
 
             $isDownload  = ($action === 'files.download');
             $disposition = $isDownload ? 'attachment' : 'inline';
-            $filename    = rawurlencode($target['name']);
 
-            header('Content-Type: ' . ($target['mime_type'] ?: 'application/octet-stream'));
-            header("Content-Disposition: {$disposition}; filename=\"{$target['name']}\"; filename*=UTF-8''{$filename}");
+            // Re-sanitize filename for Content-Disposition header to prevent HTTP header injection.
+            // Strip any characters that could break the header value: quotes, newlines, carriage returns.
+            $safeFilename = preg_replace('/["\r\n]/', '', $target['name']);
+            $safeFilename = Helpers::sanitizeFilename($safeFilename);
+            $encodedFilename = rawurlencode($safeFilename);
+
+            // Use server-detected MIME type; fallback to stored value which was already validated at upload
+            $mimeType = $target['mime_type'] ?: 'application/octet-stream';
+
+            header('Content-Type: ' . $mimeType);
+            header("Content-Disposition: {$disposition}; filename=\"{$safeFilename}\"; filename*=UTF-8''{$encodedFilename}");
             if (!empty($target['size'])) {
                 header('Content-Length: ' . $target['size']);
             }

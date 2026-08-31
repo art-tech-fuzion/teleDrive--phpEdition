@@ -108,7 +108,7 @@ class StorageEngine {
         // 4. Detect top message watermark in Index Channel
         $topMsgId = 0;
         try {
-            $ping = $this->telegram->sendMessage($this->indexChannel, "<!--sync-->");
+            $ping = $this->telegram->sendMessage($this->indexChannel, "<code>sync</code>");
             $topMsgId = (int)($ping['message_id'] ?? 0);
             if ($topMsgId > 0) {
                 $this->telegram->deleteMessage($this->indexChannel, $topMsgId);
@@ -117,42 +117,40 @@ class StorageEngine {
             error_log("Top watermark detection note: " . $e->getMessage());
         }
 
-        // Determine fast scan range (maximum 8 recent messages to guarantee sub-second execution)
+        // Determine scan range:
+        // - If pinned manifest exists: scan strictly from ($pinnedMsgId + 1) to $endMsgId
+        // - If no pinned manifest exists (under 50 items): scan from startBound (1) up to $endMsgId (capped at 50 messages)
         if ($topMsgId > 0) {
             $endMsgId   = $topMsgId - 1;
             $startBound = ($pinnedMsgId > 0) ? ($pinnedMsgId + 1) : 1;
-            $startMsgId = max($startBound, $endMsgId - 8);
+            $startMsgId = max($startBound, $endMsgId - self::COMPACTION_THRESHOLD);
         } else {
             $startMsgId = 1;
             $endMsgId   = 0;
         }
 
-        // 5. Scan recent delta messages in fast window
-        for ($scanId = $startMsgId; $scanId <= $endMsgId; $scanId++) {
-            try {
-                $fwdMsg = $this->telegram->forwardMessage($this->storageChannel, $this->indexChannel, $scanId);
-                if (!empty($fwdMsg) && isset($fwdMsg['message_id'])) {
-                    $this->telegram->deleteMessage($this->storageChannel, (int)$fwdMsg['message_id']);
+        // 5. Scan recent delta messages concurrently using high-speed multi-cURL (self-forwarding in Index Channel)
+        if ($startMsgId <= $endMsgId) {
+            $scanIds = range($startMsgId, $endMsgId);
+            $rawMessages = $this->telegram->fetchMessagesBatch($this->indexChannel, $this->indexChannel, $scanIds);
 
-                    $text = $fwdMsg['text'] ?? $fwdMsg['caption'] ?? '';
-                    $cleanJson = strip_tags(html_entity_decode($text, ENT_QUOTES, 'UTF-8'));
-                    $parsed = json_decode($cleanJson, true);
+            foreach ($rawMessages as $scanId => $fwdMsg) {
+                $text = $fwdMsg['text'] ?? $fwdMsg['caption'] ?? '';
+                $cleanJson = strip_tags(html_entity_decode($text, ENT_QUOTES, 'UTF-8'));
+                $parsed = json_decode($cleanJson, true);
 
-                    if (is_array($parsed)) {
-                        // Skip deleted / tombstone items
-                        if (!empty($parsed['deleted']) && !empty($parsed['id'])) {
-                            unset($items[$parsed['id']]);
-                            continue;
-                        }
-                        if (isset($parsed['id'], $parsed['type'])) {
-                            $parsed['index_message_id'] = $scanId;
-                            $items[$parsed['id']] = $parsed;
-                            $deltaCount++;
-                        }
+                if (is_array($parsed)) {
+                    // Skip deleted / tombstone items
+                    if (!empty($parsed['deleted']) && !empty($parsed['id'])) {
+                        unset($items[$parsed['id']]);
+                        continue;
+                    }
+                    if (isset($parsed['id'], $parsed['type'])) {
+                        $parsed['index_message_id'] = $scanId;
+                        $items[$parsed['id']] = $parsed;
+                        $deltaCount++;
                     }
                 }
-            } catch (Exception $e) {
-                // Skip gap / missing message
             }
         }
 

@@ -1,17 +1,36 @@
 {
     "items": [
         {
-            "id": "3f16d1ab-3062-4706-b089-9840e5db6bd6",
+            "id": "e4356cd9-d159-4d7a-b537-86d544d7b96b",
             "type": "folder",
             "name": "new",
             "parent_id": "root",
-            "created_at": 1788217396,
-            "updated_at": 1788217599,
-            "index_message_id": 32
+            "created_at": 1788219147,
+            "updated_at": 1788219147,
+            "index_message_id": 58
+        },
+        {
+            "id": "8ac95d50-ab15-40f4-ac9e-aba9acdafecf",
+            "type": "file",
+            "name": "masters_manifest.json",
+            "size": 1364,
+            "mime_type": "application/octet-stream",
+            "parent_id": "e4356cd9-d159-4d7a-b537-86d544d7b96b",
+            "chunks": [
+                {
+                    "part": 1,
+                    "message_id": 60,
+                    "file_id": "BQACAgUAAyEGAATtnfPFAAM8apYPRuC-8Y9EIjTPFoXZ5pQL7psAAukjAAJZKrBUH1HrRop3S349BA",
+                    "size": 1364
+                }
+            ],
+            "created_at": 1788219206,
+            "updated_at": 1788219206,
+            "index_message_id": 64
         }
     ],
     "pinned_message_id": 0,
-    "delta_count": 6,
-    "total_items": 1,
-    "last_synced_at": 1788217399
+    "delta_count": 2,
+    "total_items": 2,
+    "last_synced_at": 1788219274
 }
