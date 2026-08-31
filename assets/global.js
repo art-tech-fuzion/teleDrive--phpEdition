@@ -35,25 +35,20 @@ window.TeleDrive = window.TeleDrive || {};
         const toast = document.createElement('div');
         toast.className = `td-toast td-toast-${type}`;
 
-        const bgMap = {
-            success: 'var(--color-success-bg, rgba(16, 185, 129, 0.15))',
-            error: 'var(--color-danger-bg, rgba(239, 68, 68, 0.15))',
-            warning: 'var(--color-warning-bg, rgba(245, 158, 11, 0.15))',
-            info: 'var(--color-primary-light, rgba(59, 130, 246, 0.15))'
-        };
-
         const borderMap = {
             success: 'var(--color-success, #10b981)',
-            error: 'var(--color-danger, #ef4444)',
+            error:   'var(--color-danger, #ef4444)',
             warning: 'var(--color-warning, #f59e0b)',
-            info: 'var(--color-primary, #3b82f6)'
+            info:    'var(--color-primary, #3b82f6)',
+            loading: 'var(--color-primary, #3b82f6)'
         };
 
         const iconMap = {
-            success: '✓',
-            error: '✕',
-            warning: '⚠',
-            info: 'ℹ'
+            success: '<span style="color:#10b981; font-size:16px; font-weight:bold;">✓</span>',
+            error:   '<span style="color:#ef4444; font-size:16px; font-weight:bold;">✕</span>',
+            warning: '<span style="color:#f59e0b; font-size:16px; font-weight:bold;">⚠</span>',
+            info:    '<span style="color:#3b82f6; font-size:16px; font-weight:bold;">ℹ</span>',
+            loading: '<div style="width:16px; height:16px; border:2px solid rgba(59,130,246,0.3); border-top-color:#3b82f6; border-radius:50%; animation:tdSpin 0.7s linear infinite;"></div>'
         };
 
         toast.style.cssText = `
@@ -69,18 +64,24 @@ window.TeleDrive = window.TeleDrive || {};
             align-items: center;
             gap: 10px;
             min-width: 260px;
-            max-width: 400px;
+            max-width: 420px;
             pointer-events: auto;
             transform: translateX(120%);
             opacity: 0;
-            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, border-color 0.2s ease;
         `;
 
-        toast.innerHTML = `
-            <span style="font-weight:bold; color:${borderMap[type] || borderMap.info}; font-size:16px;">${iconMap[type] || 'ℹ'}</span>
-            <span style="flex:1;">${message}</span>
-        `;
+        function renderContent(msg, t) {
+            toast.className = `td-toast td-toast-${t}`;
+            toast.style.border = `1px solid ${borderMap[t] || borderMap.info}`;
+            toast.style.borderLeft = `4px solid ${borderMap[t] || borderMap.info}`;
+            toast.innerHTML = `
+                <span class="td-toast-icon" style="display:flex; align-items:center;">${iconMap[t] || iconMap.info}</span>
+                <span class="td-toast-text" style="flex:1; line-height:1.4;">${msg}</span>
+            `;
+        }
 
+        renderContent(message, type);
         container.appendChild(toast);
 
         // Animate In
@@ -89,12 +90,37 @@ window.TeleDrive = window.TeleDrive || {};
             toast.style.opacity = '1';
         });
 
-        // Auto Dismiss
-        setTimeout(() => {
+        let dismissTimeout = null;
+
+        function scheduleDismiss(ms) {
+            if (dismissTimeout) clearTimeout(dismissTimeout);
+            if (ms > 0) {
+                dismissTimeout = setTimeout(() => {
+                    dismiss();
+                }, ms);
+            }
+        }
+
+        function dismiss() {
+            if (dismissTimeout) clearTimeout(dismissTimeout);
             toast.style.transform = 'translateX(120%)';
             toast.style.opacity = '0';
-            setTimeout(() => toast.remove(), 300);
-        }, duration);
+            setTimeout(() => {
+                if (toast.parentNode) toast.remove();
+            }, 300);
+        }
+
+        if (type !== 'loading' && duration > 0) {
+            scheduleDismiss(duration);
+        }
+
+        return {
+            dismiss,
+            update: function(newMsg, newType = 'info', newDuration = 3000) {
+                renderContent(newMsg, newType);
+                scheduleDismiss(newDuration);
+            }
+        };
     };
 })();
 

@@ -235,6 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.items.forEach(item => {
             const card = document.createElement('div');
             card.className = 'td-grid-card';
+            card.dataset.itemId = item.id;
             const iconData = getFileIcon(item);
 
             card.innerHTML = `
@@ -292,6 +293,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.items.forEach(item => {
             const tr = document.createElement('tr');
             tr.className = 'td-table-row';
+            tr.dataset.itemId = item.id;
             const iconData = getFileIcon(item);
 
             tr.innerHTML = `
@@ -420,7 +422,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (!folderName || !folderName.trim()) return;
 
-        TeleDrive.toast('Creating folder...', 'info', 2000);
+        const toastCtrl = TeleDrive.toast(`Creating folder "${folderName.trim()}" in Telegram...`, 'loading', 0);
 
         try {
             const formData = new FormData();
@@ -431,19 +433,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await apiFetch('api/index.php', { method: 'POST', body: formData });
             const data = await res.json();
 
-            if (data.success) {
-                TeleDrive.toast('Folder created successfully.', 'success');
-                await loadFolder(state.currentFolderId);
+            if (data.success && data.folder) {
+                state.items.unshift(data.folder);
+                renderItems();
+                toastCtrl.update(`Folder "${data.folder.name}" created successfully.`, 'success', 2500);
             } else {
-                TeleDrive.toast(data.error || 'Failed to create folder.', 'error');
+                toastCtrl.update(data.error || 'Failed to create folder.', 'error', 4000);
             }
         } catch (err) {
             console.error('Error creating folder:', err);
-            TeleDrive.toast(`Error creating folder: ${err.message || err}`, 'error');
+            toastCtrl.update(`Error creating folder: ${err.message || err}`, 'error', 4000);
         }
     };
 
-    // 11. Rename Item with Custom Modal Dialog & Loading Buffer
+    // 11. Rename Item with Optimistic UI & Loading Toast
     async function handleRename(item) {
         const newName = await TeleDrive.prompt({
             title: `Rename ${item.type === 'folder' ? 'Folder' : 'File'}`,
@@ -455,13 +458,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (!newName || !newName.trim() || newName.trim() === item.name) return;
 
-        TeleDrive.toast(`Renaming ${item.type} to "${newName.trim()}"...`, 'info', 2000);
+        const oldName = item.name;
+        const cleanNewName = newName.trim();
+
+        // 1. Optimistic UI update in DOM and state
+        item.name = cleanNewName;
+        const matchingElms = document.querySelectorAll(`[data-item-id="${item.id}"]`);
+        matchingElms.forEach(el => {
+            const nameEl = el.querySelector('.td-grid-card-name, .td-table-name-cell span[title]');
+            if (nameEl) {
+                nameEl.textContent = cleanNewName;
+                nameEl.title = cleanNewName;
+            }
+        });
+
+        const toastCtrl = TeleDrive.toast(`Renaming to "${cleanNewName}"...`, 'loading', 0);
 
         try {
             const formData = new FormData();
             formData.append('action', 'items.rename');
             formData.append('id', item.id);
-            formData.append('name', newName.trim());
+            formData.append('name', cleanNewName);
 
             const res = await apiFetch('api/index.php', { method: 'POST', body: formData });
             const rawText = await res.text();
@@ -473,18 +490,34 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (data && data.success) {
-                TeleDrive.toast(`Renamed to "${newName.trim()}" successfully.`, 'success');
-                await loadFolder(state.currentFolderId);
+                toastCtrl.update(`Renamed to "${cleanNewName}" successfully.`, 'success', 2500);
             } else {
-                TeleDrive.toast((data && data.error) || 'Failed to rename item.', 'error');
+                // Revert on server error
+                item.name = oldName;
+                matchingElms.forEach(el => {
+                    const nameEl = el.querySelector('.td-grid-card-name, .td-table-name-cell span[title]');
+                    if (nameEl) {
+                        nameEl.textContent = oldName;
+                        nameEl.title = oldName;
+                    }
+                });
+                toastCtrl.update((data && data.error) || 'Failed to rename item.', 'error', 4000);
             }
         } catch (err) {
             console.error('Error renaming item:', err);
-            TeleDrive.toast(`Error renaming item: ${err.message || err}`, 'error');
+            item.name = oldName;
+            matchingElms.forEach(el => {
+                const nameEl = el.querySelector('.td-grid-card-name, .td-table-name-cell span[title]');
+                if (nameEl) {
+                    nameEl.textContent = oldName;
+                    nameEl.title = oldName;
+                }
+            });
+            toastCtrl.update(`Error renaming item: ${err.message || err}`, 'error', 4000);
         }
     }
 
-    // 12. Move Item to Destination Folder Modal
+    // 12. Move Item to Destination Folder Modal with Instant Optimistic Transition
     async function handleMove(item) {
         // Fetch all available folders
         try {
@@ -573,7 +606,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const destId = select.value;
                 cleanup();
 
-                TeleDrive.toast(`Moving "${item.name}"...`, 'info', 2000);
+                // Optimistic: animate item out immediately
+                const matchingElms = document.querySelectorAll(`[data-item-id="${item.id}"]`);
+                matchingElms.forEach(el => el.classList.add('td-item-leaving'));
+
+                const toastCtrl = TeleDrive.toast(`Moving "${item.name}"...`, 'loading', 0);
                 try {
                     const formData = new FormData();
                     formData.append('action', 'items.move');
@@ -584,14 +621,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     const moveData = await moveRes.json();
 
                     if (moveData.success) {
-                        TeleDrive.toast(`Moved "${item.name}" successfully.`, 'success');
-                        await loadFolder(state.currentFolderId);
+                        state.items = state.items.filter(it => it.id !== item.id);
+                        renderItems();
+                        toastCtrl.update(`Moved "${item.name}" successfully.`, 'success', 2500);
                     } else {
-                        TeleDrive.toast(moveData.error || 'Failed to move item.', 'error');
+                        matchingElms.forEach(el => el.classList.remove('td-item-leaving'));
+                        toastCtrl.update(moveData.error || 'Failed to move item.', 'error', 4000);
                     }
                 } catch (err) {
                     console.error('Error moving item:', err);
-                    TeleDrive.toast('Error moving item.', 'error');
+                    matchingElms.forEach(el => el.classList.remove('td-item-leaving'));
+                    toastCtrl.update('Error moving item.', 'error', 4000);
                 }
             };
         } catch (err) {
@@ -600,7 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 13. Delete Item (Cascade)
+    // 13. Delete Item (Cascade) with Instant Optimistic Dimming & Persistent Toast
     async function handleDelete(item) {
         const isFolder = item.type === 'folder';
         const confirmed = await TeleDrive.confirm({
@@ -611,7 +651,11 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         if (confirmed) {
-            TeleDrive.toast(`Deleting ${item.name}...`, 'info', 2000);
+            // Optimistic feedback: immediately dim the target card in the UI
+            const matchingElms = document.querySelectorAll(`[data-item-id="${item.id}"]`);
+            matchingElms.forEach(el => el.classList.add('td-item-deleting'));
+
+            const toastCtrl = TeleDrive.toast(`Deleting "${item.name}" from Telegram storage...`, 'loading', 0);
             try {
                 const formData = new FormData();
                 formData.append('action', 'items.delete');
@@ -627,14 +671,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 if (data && data.success) {
-                    TeleDrive.toast('Item deleted from Telegram storage.', 'success');
-                    await loadFolder(state.currentFolderId);
+                    matchingElms.forEach(el => el.classList.add('td-item-leaving'));
+                    setTimeout(() => {
+                        state.items = state.items.filter(it => it.id !== item.id);
+                        renderItems();
+                    }, 200);
+                    toastCtrl.update(`"${item.name}" deleted from Telegram storage.`, 'success', 2500);
                 } else {
-                    TeleDrive.toast((data && data.error) || 'Failed to delete item.', 'error');
+                    matchingElms.forEach(el => el.classList.remove('td-item-deleting'));
+                    toastCtrl.update((data && data.error) || 'Failed to delete item.', 'error', 4000);
                 }
             } catch (err) {
                 console.error('Error deleting item:', err);
-                TeleDrive.toast(`Error deleting item: ${err.message || err}`, 'error');
+                matchingElms.forEach(el => el.classList.remove('td-item-deleting'));
+                toastCtrl.update(`Error deleting item: ${err.message || err}`, 'error', 4000);
             }
         }
     }

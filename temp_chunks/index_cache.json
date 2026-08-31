@@ -1,36 +1,36 @@
 {
     "items": [
         {
-            "id": "e4356cd9-d159-4d7a-b537-86d544d7b96b",
+            "id": "88f63a8c-3644-4507-994d-26f636f8d504",
             "type": "folder",
-            "name": "new",
+            "name": "mine",
             "parent_id": "root",
-            "created_at": 1788219147,
-            "updated_at": 1788219147,
-            "index_message_id": 58
+            "created_at": 1788219581,
+            "updated_at": 1788219581,
+            "index_message_id": 68
         },
         {
-            "id": "8ac95d50-ab15-40f4-ac9e-aba9acdafecf",
+            "id": "8d34857b-10c7-4f42-8b0a-b176d226b616",
             "type": "file",
-            "name": "masters_manifest.json",
-            "size": 1364,
-            "mime_type": "application/octet-stream",
-            "parent_id": "e4356cd9-d159-4d7a-b537-86d544d7b96b",
+            "name": "sex.png",
+            "size": 1977694,
+            "mime_type": "image/png",
+            "parent_id": "88f63a8c-3644-4507-994d-26f636f8d504",
             "chunks": [
                 {
                     "part": 1,
-                    "message_id": 60,
-                    "file_id": "BQACAgUAAyEGAATtnfPFAAM8apYPRuC-8Y9EIjTPFoXZ5pQL7psAAukjAAJZKrBUH1HrRop3S349BA",
-                    "size": 1364
+                    "message_id": 63,
+                    "file_id": "BQACAgUAAyEGAATtnfPFAAM_apYQ3w5Drdo__MILeWCUgzmIKxMAAuwjAAJZKrBU_yFjc-A_C2s9BA",
+                    "size": 1977694
                 }
             ],
-            "created_at": 1788219206,
-            "updated_at": 1788219206,
-            "index_message_id": 64
+            "created_at": 1788219616,
+            "updated_at": 1788219704,
+            "index_message_id": 74
         }
     ],
     "pinned_message_id": 0,
     "delta_count": 2,
     "total_items": 2,
-    "last_synced_at": 1788219274
+    "last_synced_at": 1788219759
 }

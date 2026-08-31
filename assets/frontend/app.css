@@ -903,3 +903,32 @@
     transform: translateX(100%);
   }
 }
+
+/* -----------------------------------------------------------------------
+   Optimistic UI Transitions & States
+   ----------------------------------------------------------------------- */
+@keyframes tdSpin {
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.td-grid-card, .td-table-row {
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), background 0.15s ease;
+}
+
+.td-item-deleting {
+  opacity: 0.35 !important;
+  pointer-events: none !important;
+  filter: grayscale(0.8);
+  transform: scale(0.97) !important;
+  transition: all 0.2s ease !important;
+}
+
+.td-item-leaving {
+  opacity: 0 !important;
+  transform: scale(0.85) !important;
+  pointer-events: none !important;
+  transition: opacity 0.25s ease, transform 0.25s ease !important;
+}
+
