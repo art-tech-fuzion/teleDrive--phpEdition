@@ -428,12 +428,34 @@
   min-height: 300px;
   text-align: center;
   color: var(--text-secondary);
+  gap: var(--spacing-3);
 }
 
 .td-empty-icon {
-  font-size: 54px;
-  margin-bottom: var(--spacing-3);
-  opacity: 0.7;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  opacity: 0.8;
+  margin-bottom: var(--spacing-2);
+}
+
+.td-empty-state h3 {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-main);
+}
+
+.td-empty-state p {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  max-width: 320px;
+  line-height: 1.6;
 }
 
 /* Grid View */
@@ -451,19 +473,19 @@
   display: flex;
   flex-direction: column;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), background var(--transition-fast);
   position: relative;
 }
 
 .td-grid-card:hover {
   background: var(--bg-surface-elevated);
-  border-color: var(--border-color-hover);
+  border-color: rgba(56, 189, 248, 0.3);
   transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(56, 189, 248, 0.15);
 }
 
 .td-grid-card-preview {
-  height: 110px;
+  height: 100px;
   border-radius: var(--radius-sm);
   background: var(--bg-body);
   display: flex;
@@ -472,7 +494,18 @@
   margin-bottom: var(--spacing-3);
   overflow: hidden;
   color: var(--text-muted);
+  transition: background var(--transition-fast);
 }
+
+/* File-type icon tint backgrounds */
+.td-grid-card-preview.td-icon-folder  { background: rgba(56,  189, 248, 0.07); }
+.td-grid-card-preview.td-icon-image   { background: rgba(52,  211, 153, 0.07); }
+.td-grid-card-preview.td-icon-video   { background: rgba(239,  68,  68, 0.07); }
+.td-grid-card-preview.td-icon-audio   { background: rgba(129, 140, 248, 0.07); }
+.td-grid-card-preview.td-icon-pdf     { background: rgba(251, 191,  36, 0.07); }
+.td-grid-card-preview.td-icon-archive { background: rgba(251, 146,  60, 0.07); }
+.td-grid-card-preview.td-icon-code    { background: rgba(52,  211, 153, 0.07); }
+.td-grid-card-preview.td-icon-default { background: rgba(100, 116, 139, 0.07); }
 
 .td-grid-card-icon {
   font-size: 38px;
@@ -519,10 +552,99 @@
   opacity: 1;
 }
 
+/* -----------------------------------------------------------------------
+   SVG Action Buttons (Rename, Delete, Move, Download)
+   Used inside grid cards and list table rows.
+   ----------------------------------------------------------------------- */
+.td-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.td-action-btn:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-main);
+}
+
+.td-action-btn.td-action-download:hover { color: var(--color-primary); }
+.td-action-btn.td-action-move:hover     { color: var(--color-secondary); }
+.td-action-btn.td-action-rename:hover   { color: var(--color-warning); }
+.td-action-btn.td-action-delete:hover   { color: var(--color-danger); }
+
 .td-table-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.td-table-row:hover .td-table-actions {
+  opacity: 1;
+}
+
+/* -----------------------------------------------------------------------
+   List Table Styling
+   ----------------------------------------------------------------------- */
+.td-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.td-table thead th {
+  text-align: left;
+  padding: var(--spacing-2) var(--spacing-4);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.td-table tbody tr {
+  border-bottom: 1px solid var(--border-color);
+  transition: background var(--transition-fast);
+}
+
+.td-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.td-table tbody tr:hover {
+  background: var(--bg-surface);
+  cursor: pointer;
+}
+
+.td-table tbody td {
+  padding: var(--spacing-3) var(--spacing-4);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+
+.td-table-name-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  color: var(--text-main);
+  font-weight: var(--font-weight-medium);
+}
+
+.td-table-name-cell .td-file-icon {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
 }
 
 /* Floating Upload Queue */

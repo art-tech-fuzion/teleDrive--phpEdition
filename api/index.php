@@ -6,10 +6,11 @@
  * - auth.login, auth.logout, auth.status
  * - files.list
  * - files.upload_chunk, files.complete_upload
- * - files.download, files.stream_preview
+ * - files.download, files.preview (stream_preview alias)
  * - files.rename, files.delete
  * - folder.create
- * - system.test_connection
+ * - items.move
+ * - system.status
  */
 
 define('TELEDRIVE_INIT', true);
@@ -20,15 +21,39 @@ require_once __DIR__ . '/../includes/Auth.php';
 require_once __DIR__ . '/../includes/TelegramClient.php';
 require_once __DIR__ . '/../includes/StorageEngine.php';
 
-// Set CORS & Security Headers
+// -----------------------------------------------------------------------
+// 1. Security Headers
+// -----------------------------------------------------------------------
 header('X-Content-Type-Options: nosniff');
-header('X-Frame-Options: SAMEORIGIN');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+header('X-XSS-Protection: 1; mode=block');
+// Content-Security-Policy — tight policy: only same-origin resources allowed
+header("Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'none'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';");
 
 $action = $_GET['action'] ?? $_POST['action'] ?? '';
 
+// -----------------------------------------------------------------------
+// 2. CSRF Protection for all state-changing POST actions
+//    (Login and auth.status are exempt since they don't mutate user data
+//    or are protected by credentials themselves)
+// -----------------------------------------------------------------------
+$csrfExemptActions = ['auth.login', 'auth.logout', 'auth.status', 'system.status'];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !in_array($action, $csrfExemptActions, true)) {
+    // Expect token either in header (X-CSRF-Token) or POST body (_csrf)
+    $submittedToken = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_POST['_csrf'] ?? '';
+    if (!Auth::verifyCsrf($submittedToken)) {
+        Helpers::error('Invalid or missing CSRF token.', 403);
+    }
+}
+
 try {
     switch ($action) {
-        // --- 1. Authentication Actions ---
+
+        // --- 1. Authentication ---
+
         case 'auth.login':
             $user = trim($_POST['username'] ?? '');
             $pass = trim($_POST['password'] ?? '');
@@ -37,9 +62,26 @@ try {
                 Helpers::error('Username and password are required.');
             }
 
+            // Check for active lockout before attempting login
+            $lockout = Auth::getLockoutRemaining();
+            if ($lockout > 0) {
+                $mins = ceil($lockout / 60);
+                Helpers::error("Too many failed attempts. Please try again in {$mins} minute(s).", 429);
+            }
+
             if (Auth::login($user, $pass)) {
-                Helpers::success(['username' => $user], 'Login successful.');
+                // Return fresh CSRF token so JS can store it for subsequent requests
+                Helpers::success([
+                    'username'   => $user,
+                    'csrf_token' => Auth::getCsrfToken()
+                ], 'Login successful.');
             } else {
+                // Check again in case this attempt triggered a lockout
+                $lockout = Auth::getLockoutRemaining();
+                if ($lockout > 0) {
+                    $mins = ceil($lockout / 60);
+                    Helpers::error("Too many failed attempts. Account locked for {$mins} minute(s).", 429);
+                }
                 Helpers::error('Invalid credentials.', 401);
             }
             break;
@@ -50,40 +92,43 @@ try {
             break;
 
         case 'auth.status':
-            Helpers::success([
-                'authenticated' => Auth::check(),
-                'user'          => $_SESSION['teledrive_user'] ?? null
-            ]);
+            $authenticated = Auth::check();
+            // Only return username when authenticated — prevents information leakage
+            $payload = ['authenticated' => $authenticated];
+            if ($authenticated) {
+                $payload['user']       = $_SESSION['teledrive_user'] ?? null;
+                $payload['csrf_token'] = Auth::getCsrfToken();
+            }
+            Helpers::success($payload);
             break;
 
-        // --- 2. System Verification ---
+        // --- 2. System Status ---
+
         case 'system.status':
             Auth::requireAuth();
             $engine = new StorageEngine();
-            $configured = $engine->isConfigured();
-            $status = [
-                'configured'      => $configured,
+            Helpers::success([
+                'configured'      => $engine->isConfigured(),
                 'bot_token_set'   => !empty(TELEGRAM_BOT_TOKEN),
                 'storage_channel' => !empty(STORAGE_CHANNEL_ID),
                 'index_channel'   => !empty(INDEX_CHANNEL_ID),
                 'php_version'     => PHP_VERSION,
                 'max_upload_size' => ini_get('upload_max_filesize'),
-                'post_max_size'   => ini_get('post_max_size')
-            ];
-            Helpers::success($status);
+                'post_max_size'   => ini_get('post_max_size'),
+            ]);
             break;
 
         // --- 3. File Listing & Tree ---
+
         case 'files.list':
             Auth::requireAuth();
             $parentId = $_GET['parent_id'] ?? 'root';
-            $search = trim($_GET['search'] ?? '');
-            
-            $engine = new StorageEngine();
-            $data = $engine->getFileSystemIndex();
-            $items = $data['items'];
+            $search   = trim($_GET['search'] ?? '');
 
-            // Filter by parent_id or search query
+            $engine = new StorageEngine();
+            $data   = $engine->getFileSystemIndex();
+            $items  = $data['items'];
+
             $filtered = [];
             foreach ($items as $item) {
                 if (!empty($search)) {
@@ -98,7 +143,7 @@ try {
                 }
             }
 
-            // Sort: Folders first, then by name
+            // Sort: folders first, then alphabetical
             usort($filtered, function($a, $b) {
                 if ($a['type'] === $b['type']) {
                     return strcasecmp($a['name'], $b['name']);
@@ -109,11 +154,12 @@ try {
             Helpers::success([
                 'current_folder_id' => $parentId,
                 'items'             => $filtered,
-                'total_count'       => count($filtered)
+                'total_count'       => count($filtered),
             ]);
             break;
 
-        // --- 4. Chunked Upload Handling ---
+        // --- 4. Chunked Upload ---
+
         case 'files.upload_chunk':
             Auth::requireAuth();
             if (empty($_FILES['chunk']['tmp_name'])) {
@@ -129,9 +175,21 @@ try {
                 Helpers::error('Invalid upload session ID.');
             }
 
+            // Validate chunk index is within expected bounds
+            if ($chunkIndex < 0 || $chunkIndex >= $totalChunks) {
+                Helpers::error('Chunk index out of bounds.');
+            }
+
             $uploadSessionDir = TEMP_CHUNK_DIR . '/' . $uploadId;
             if (!is_dir($uploadSessionDir)) {
-                @mkdir($uploadSessionDir, 0777, true);
+                @mkdir($uploadSessionDir, 0750, true);
+            }
+
+            // Verify the session dir stays within TEMP_CHUNK_DIR (path traversal guard)
+            $realSession = realpath($uploadSessionDir) ?: $uploadSessionDir;
+            $realBase    = realpath(TEMP_CHUNK_DIR) ?: TEMP_CHUNK_DIR;
+            if (strpos($realSession, $realBase) !== 0) {
+                Helpers::error('Invalid upload session path.', 400);
             }
 
             $chunkPath = "{$uploadSessionDir}/part_{$chunkIndex}";
@@ -142,7 +200,7 @@ try {
             Helpers::success([
                 'chunk_index'  => $chunkIndex,
                 'total_chunks' => $totalChunks,
-                'received'     => true
+                'received'     => true,
             ], 'Chunk uploaded successfully.');
             break;
 
@@ -155,18 +213,37 @@ try {
             $mimeType    = $_POST['mime_type'] ?? 'application/octet-stream';
             $totalChunks = (int)($_POST['total_chunks'] ?? 1);
 
+            // Validate parent_id: must be 'root' or a known folder ID
+            if ($parentId !== 'root') {
+                $engine    = new StorageEngine();
+                $indexData = $engine->getFileSystemIndex();
+                $validParent = false;
+                foreach ($indexData['items'] as $it) {
+                    if ($it['id'] === $parentId && $it['type'] === 'folder') {
+                        $validParent = true;
+                        break;
+                    }
+                }
+                if (!$validParent) {
+                    Helpers::error('Invalid destination folder.', 400);
+                }
+            } else {
+                $engine = new StorageEngine();
+            }
+
             $uploadSessionDir = TEMP_CHUNK_DIR . '/' . $uploadId;
             if (!is_dir($uploadSessionDir)) {
                 Helpers::error('Upload session not found.');
             }
 
-            // Assemble / Upload chunks to Telegram Storage Channel
-            // Telegram Bot API limit is 2GB per file. If total size is small or multipart chunks,
-            // we send each assembled part (up to 1.9GB) to Telegram Storage Channel.
-            $engine = new StorageEngine();
-            $telegramChunks = [];
+            // Path traversal guard on upload session directory
+            $realSession = realpath($uploadSessionDir) ?: $uploadSessionDir;
+            $realBase    = realpath(TEMP_CHUNK_DIR) ?: TEMP_CHUNK_DIR;
+            if (strpos($realSession, $realBase) !== 0) {
+                Helpers::error('Invalid upload session.', 400);
+            }
 
-            // Case A: Single small file or merged parts
+            // Assemble all chunks into a single file
             $assembledFile = "{$uploadSessionDir}/assembled_{$filename}";
             $outHandle = fopen($assembledFile, 'wb');
             for ($i = 0; $i < $totalChunks; $i++) {
@@ -187,31 +264,33 @@ try {
                 'part'       => 1,
                 'message_id' => $tgChunk['message_id'],
                 'file_id'    => $tgChunk['file_id'],
-                'size'       => filesize($assembledFile)
+                'size'       => filesize($assembledFile),
             ];
 
             // Cleanup local temp files
             Helpers::removeDir($uploadSessionDir);
 
-            // Register File entry in Index Channel
+            // Register file in Index Channel
             $newEntry = $engine->createFileEntry([
                 'name'      => $filename,
                 'size'      => $fileSize ?: filesize($assembledFile),
                 'mime_type' => $mimeType,
                 'parent_id' => $parentId,
-                'chunks'    => $telegramChunks
+                'chunks'    => $telegramChunks,
             ]);
 
             Helpers::success(['item' => $newEntry], 'File uploaded and indexed successfully.');
             break;
 
         // --- 5. Download & Streaming ---
+
         case 'files.download':
         case 'files.preview':
+        case 'files.stream_preview':
             Auth::requireAuth();
-            $id = $_GET['id'] ?? '';
+            $id     = $_GET['id'] ?? '';
             $engine = new StorageEngine();
-            $index = $engine->getFileSystemIndex();
+            $index  = $engine->getFileSystemIndex();
             $target = null;
 
             foreach ($index['items'] as $item) {
@@ -225,11 +304,10 @@ try {
                 Helpers::error('File not found or has no chunks.', 404);
             }
 
-            $isDownload = ($action === 'files.download');
+            $isDownload  = ($action === 'files.download');
             $disposition = $isDownload ? 'attachment' : 'inline';
-            $filename = rawurlencode($target['name']);
+            $filename    = rawurlencode($target['name']);
 
-            // Headers for streaming download
             header('Content-Type: ' . ($target['mime_type'] ?: 'application/octet-stream'));
             header("Content-Disposition: {$disposition}; filename=\"{$target['name']}\"; filename*=UTF-8''{$filename}");
             if (!empty($target['size'])) {
@@ -238,7 +316,6 @@ try {
             header('Cache-Control: private, max-age=3600');
             header('Accept-Ranges: none');
 
-            // Clean output buffers
             while (ob_get_level()) {
                 ob_end_clean();
             }
@@ -250,9 +327,10 @@ try {
             exit;
 
         // --- 6. Folder Creation ---
+
         case 'folder.create':
             Auth::requireAuth();
-            $name = trim($_POST['name'] ?? '');
+            $name     = trim($_POST['name'] ?? '');
             $parentId = $_POST['parent_id'] ?? 'root';
 
             if (empty($name)) {
@@ -264,24 +342,27 @@ try {
             Helpers::success(['folder' => $folder], 'Folder created successfully.');
             break;
 
-        // --- 7. Rename & Delete Operations ---
+        // --- 7. Rename ---
+
         case 'items.rename':
             Auth::requireAuth();
-            $id = $_POST['id'] ?? '';
+            $id      = $_POST['id'] ?? '';
             $newName = trim($_POST['name'] ?? '');
 
             if (empty($id) || empty($newName)) {
                 Helpers::error('Item ID and new name are required.');
             }
 
-            $engine = new StorageEngine();
+            $engine  = new StorageEngine();
             $updated = $engine->renameItem($id, $newName);
             Helpers::success(['item' => $updated], 'Item renamed successfully.');
             break;
 
+        // --- 8. Move ---
+
         case 'items.move':
             Auth::requireAuth();
-            $id = $_POST['id'] ?? '';
+            $id           = $_POST['id'] ?? '';
             $destParentId = $_POST['parent_id'] ?? 'root';
 
             if (empty($id)) {
@@ -289,19 +370,23 @@ try {
             }
 
             $engine = new StorageEngine();
-            $moved = $engine->moveItem($id, $destParentId);
+            $moved  = $engine->moveItem($id, $destParentId);
             Helpers::success(['item' => $moved], 'Item moved successfully.');
             break;
 
+        // --- 9. Folders List (for move modal) ---
+
         case 'folders.list':
             Auth::requireAuth();
-            $engine = new StorageEngine();
-            $index = $engine->getFileSystemIndex();
+            $engine  = new StorageEngine();
+            $index   = $engine->getFileSystemIndex();
             $folders = array_filter($index['items'] ?? [], function($it) {
                 return ($it['type'] ?? '') === 'folder';
             });
             Helpers::success(['folders' => array_values($folders)]);
             break;
+
+        // --- 10. Delete ---
 
         case 'items.delete':
             Auth::requireAuth();
@@ -320,6 +405,7 @@ try {
             Helpers::error("Unknown action: {$action}", 404);
             break;
     }
+
 } catch (Exception $e) {
     Helpers::error($e->getMessage(), 500);
 }

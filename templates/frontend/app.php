@@ -17,6 +17,9 @@ if (!defined('TELEDRIVE_INIT')) {
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="assets/global.css?v=<?= file_exists(__DIR__ . '/../../assets/global.css') ? filemtime(__DIR__ . '/../../assets/global.css') : '1.0' ?>">
     <link rel="stylesheet" href="assets/frontend/app.css?v=<?= file_exists(__DIR__ . '/../../assets/frontend/app.css') ? filemtime(__DIR__ . '/../../assets/frontend/app.css') : '1.0' ?>">
+    <!-- CSRF token for all authenticated POST requests -->
+    <meta name="csrf-token" content="<?= htmlspecialchars(Auth::getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+
 </head>
 <body class="td-app-body">
     <div class="td-layout">

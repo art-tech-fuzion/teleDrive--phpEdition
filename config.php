@@ -63,7 +63,7 @@ define('TEMP_CHUNK_DIR', __DIR__ . '/' . env('TEMP_CHUNK_DIR', 'temp_chunks'));
 
 // Ensure chunk directory exists
 if (!is_dir(TEMP_CHUNK_DIR)) {
-    @mkdir(TEMP_CHUNK_DIR, 0777, true);
+    @mkdir(TEMP_CHUNK_DIR, 0750, true);
 }
 
 // 3. Secure Session Initialization

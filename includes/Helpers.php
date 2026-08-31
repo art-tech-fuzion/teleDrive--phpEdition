@@ -67,9 +67,20 @@ class Helpers {
      * Sanitize filename to prevent path traversal or injection
      */
     public static function sanitizeFilename(string $filename): string {
+        // Remove null bytes to prevent injection
+        $filename = str_replace("\0", '', $filename);
+        // Use basename to strip any path traversal component
         $filename = basename($filename);
-        $filename = preg_replace('/[^\w\s\d\-_~,;:\[\]\(\).]/u', '_', $filename);
-        return trim($filename);
+        // Allow only safe characters; replace anything else with underscore
+        $filename = preg_replace('/[^\w\s\d\-_~,;:\[\]\(\)\.]/u', '_', $filename);
+        // Strip leading dots to prevent hidden-file creation (e.g. .htaccess)
+        $filename = ltrim($filename, '.');
+        // Guarantee a non-empty name and cap length
+        $filename = trim($filename);
+        if ($filename === '') {
+            $filename = 'file_' . time();
+        }
+        return substr($filename, 0, 200);
     }
 
     /**

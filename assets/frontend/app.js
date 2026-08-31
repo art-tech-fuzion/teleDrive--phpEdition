@@ -4,6 +4,40 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
+    // ---------------------------------------------------------------------------
+    // CSRF Helper — reads token from <meta name="csrf-token"> injected by PHP
+    // ---------------------------------------------------------------------------
+    function getCsrfToken() {
+        return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    }
+
+    /**
+     * Wrapper around fetch() that automatically attaches the CSRF token header
+     * for all POST/PUT/DELETE requests, so every call site stays clean.
+     */
+    function apiFetch(url, options = {}) {
+        const method = (options.method || 'GET').toUpperCase();
+        if (method !== 'GET' && method !== 'HEAD') {
+            options.headers = options.headers || {};
+            options.headers['X-CSRF-Token'] = getCsrfToken();
+        }
+        return fetch(url, options);
+    }
+
+    // ---------------------------------------------------------------------------
+    // SVG Icon Builder — returns SVG markup for common action icons
+    // ---------------------------------------------------------------------------
+    const SVG_ICONS = {
+        download: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
+        move:     `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/></svg>`,
+        rename:   `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+        delete:   `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`,
+    };
+
+    function makeActionBtn(type, title) {
+        return `<button class="td-action-btn td-action-${type}" title="${title}">${SVG_ICONS[type]}</button>`;
+    }
+
     // State
     const state = {
         currentFolderId: 'root',
@@ -184,11 +218,11 @@ document.addEventListener('DOMContentLoaded', () => {
         state.items.forEach(item => {
             const card = document.createElement('div');
             card.className = 'td-grid-card';
-            const icon = getFileIcon(item);
+            const iconData = getFileIcon(item);
 
             card.innerHTML = `
-                <div class="td-grid-card-preview">
-                    <span class="td-grid-card-icon">${icon}</span>
+                <div class="td-grid-card-preview ${iconData.colorClass}">
+                    <span class="td-grid-card-icon">${iconData.icon}</span>
                 </div>
                 <div class="td-grid-card-info">
                     <div class="td-grid-card-name" title="${item.name}">${escapeHtml(item.name)}</div>
@@ -198,10 +232,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
                 <div class="td-grid-card-actions">
-                    ${item.type === 'file' ? '<button class="td-btn-icon td-btn-download" title="Download">⬇️</button>' : ''}
-                    <button class="td-btn-icon td-btn-move" title="Move to Folder">📂</button>
-                    <button class="td-btn-icon td-btn-rename" title="Rename">✏️</button>
-                    <button class="td-btn-icon td-btn-delete" title="Delete">🗑️</button>
+                    ${item.type === 'file' ? makeActionBtn('download', 'Download') : ''}
+                    ${makeActionBtn('move', 'Move')}
+                    ${makeActionBtn('rename', 'Rename')}
+                    ${makeActionBtn('delete', 'Delete')}
                 </div>
             `;
 
@@ -211,25 +245,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 handleItemClick(item);
             };
 
-            // Actions
             if (item.type === 'file') {
-                card.querySelector('.td-btn-download').onclick = (e) => {
+                card.querySelector('.td-action-download').onclick = (e) => {
                     e.stopPropagation();
                     startControlledDownload(item);
                 };
             }
 
-            card.querySelector('.td-btn-move').onclick = (e) => {
+            card.querySelector('.td-action-move').onclick = (e) => {
                 e.stopPropagation();
                 handleMove(item);
             };
 
-            card.querySelector('.td-btn-rename').onclick = (e) => {
+            card.querySelector('.td-action-rename').onclick = (e) => {
                 e.stopPropagation();
                 handleRename(item);
             };
 
-            card.querySelector('.td-btn-delete').onclick = (e) => {
+            card.querySelector('.td-action-delete').onclick = (e) => {
                 e.stopPropagation();
                 handleDelete(item);
             };
@@ -242,12 +275,12 @@ document.addEventListener('DOMContentLoaded', () => {
         state.items.forEach(item => {
             const tr = document.createElement('tr');
             tr.className = 'td-table-row';
-            const icon = getFileIcon(item);
+            const iconData = getFileIcon(item);
 
             tr.innerHTML = `
                 <td>
                     <div class="td-table-name-cell">
-                        <span>${icon}</span>
+                        <span class="td-file-icon">${iconData.icon}</span>
                         <span title="${item.name}">${escapeHtml(item.name)}</span>
                     </div>
                 </td>
@@ -255,37 +288,37 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${formatDate(item.updated_at || item.created_at)}</td>
                 <td>
                     <div class="td-table-actions">
-                        ${item.type === 'file' ? '<button class="td-btn-icon td-btn-download" title="Download">⬇️</button>' : ''}
-                        <button class="td-btn-icon td-btn-move" title="Move to Folder">📂</button>
-                        <button class="td-btn-icon td-btn-rename" title="Rename">✏️</button>
-                        <button class="td-btn-icon td-btn-delete" title="Delete">🗑️</button>
+                        ${item.type === 'file' ? makeActionBtn('download', 'Download') : ''}
+                        ${makeActionBtn('move', 'Move')}
+                        ${makeActionBtn('rename', 'Rename')}
+                        ${makeActionBtn('delete', 'Delete')}
                     </div>
                 </td>
             `;
 
             tr.onclick = (e) => {
-                if (e.target.closest('button')) return;
+                if (e.target.closest('.td-action-btn')) return;
                 handleItemClick(item);
             };
 
             if (item.type === 'file') {
-                tr.querySelector('.td-btn-download').onclick = (e) => {
+                tr.querySelector('.td-action-download').onclick = (e) => {
                     e.stopPropagation();
                     startControlledDownload(item);
                 };
             }
 
-            tr.querySelector('.td-btn-move').onclick = (e) => {
+            tr.querySelector('.td-action-move').onclick = (e) => {
                 e.stopPropagation();
                 handleMove(item);
             };
 
-            tr.querySelector('.td-btn-rename').onclick = (e) => {
+            tr.querySelector('.td-action-rename').onclick = (e) => {
                 e.stopPropagation();
                 handleRename(item);
             };
 
-            tr.querySelector('.td-btn-delete').onclick = (e) => {
+            tr.querySelector('.td-action-delete').onclick = (e) => {
                 e.stopPropagation();
                 handleDelete(item);
             };
@@ -378,7 +411,7 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('name', folderName.trim());
             formData.append('parent_id', state.currentFolderId);
 
-            const res = await fetch('api/index.php', { method: 'POST', body: formData });
+            const res = await apiFetch('api/index.php', { method: 'POST', body: formData });
             const data = await res.json();
 
             if (data.success) {
@@ -413,7 +446,7 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('id', item.id);
             formData.append('name', newName.trim());
 
-            const res = await fetch('api/index.php', { method: 'POST', body: formData });
+            const res = await apiFetch('api/index.php', { method: 'POST', body: formData });
             const rawText = await res.text();
             let data = null;
             try {
@@ -530,7 +563,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     formData.append('id', item.id);
                     formData.append('parent_id', destId);
 
-                    const moveRes = await fetch('api/index.php', { method: 'POST', body: formData });
+                    const moveRes = await apiFetch('api/index.php', { method: 'POST', body: formData });
                     const moveData = await moveRes.json();
 
                     if (moveData.success) {
@@ -567,7 +600,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 formData.append('action', 'items.delete');
                 formData.append('id', item.id);
 
-                const res = await fetch('api/index.php', { method: 'POST', body: formData });
+                const res = await apiFetch('api/index.php', { method: 'POST', body: formData });
                 const data = await res.json();
 
                 if (data.success) {
@@ -773,7 +806,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 formData.append('filename', file.name);
                 formData.append('chunk', chunkBlob, file.name);
 
-                const res = await fetch('api/index.php', { 
+                const res = await apiFetch('api/index.php', { 
                     method: 'POST', 
                     body: formData,
                     signal: uploadController.signal
@@ -801,7 +834,7 @@ document.addEventListener('DOMContentLoaded', () => {
             completeData.append('parent_id', state.currentFolderId);
             completeData.append('total_chunks', totalChunks);
 
-            const completeRes = await fetch('api/index.php', { 
+            const completeRes = await apiFetch('api/index.php', { 
                 method: 'POST', 
                 body: completeData,
                 signal: uploadController.signal
@@ -835,14 +868,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Utility Helpers
     function getFileIcon(item) {
-        if (item.type === 'folder') return '📁';
+        if (item.type === 'folder') {
+            return { icon: '📁', colorClass: 'td-icon-folder' };
+        }
         const mime = item.mime_type || '';
-        if (mime.startsWith('image/')) return '🖼️';
-        if (mime.startsWith('video/')) return '🎬';
-        if (mime.startsWith('audio/')) return '🎵';
-        if (mime.includes('pdf')) return '📕';
-        if (mime.includes('zip') || mime.includes('rar') || mime.includes('tar')) return '📦';
-        return '📄';
+        if (mime.startsWith('image/'))  return { icon: '🖼️', colorClass: 'td-icon-image' };
+        if (mime.startsWith('video/'))  return { icon: '🎬', colorClass: 'td-icon-video' };
+        if (mime.startsWith('audio/'))  return { icon: '🎵', colorClass: 'td-icon-audio' };
+        if (mime.includes('pdf'))       return { icon: '📕', colorClass: 'td-icon-pdf' };
+        if (mime.includes('zip') || mime.includes('rar') || mime.includes('tar') || mime.includes('7z')) {
+            return { icon: '📦', colorClass: 'td-icon-archive' };
+        }
+        if (mime.includes('javascript') || mime.includes('json') || mime.includes('xml') || mime.includes('html') || mime.includes('css')) {
+            return { icon: '💻', colorClass: 'td-icon-code' };
+        }
+        return { icon: '📄', colorClass: 'td-icon-default' };
     }
 
     function formatBytes(bytes) {
