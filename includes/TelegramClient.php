@@ -23,7 +23,7 @@ class TelegramClient {
     /**
      * Execute generic Telegram API method
      */
-    public function request(string $method, array $params = [], string $httpMethod = 'POST'): array {
+    public function request(string $method, array $params = [], string $httpMethod = 'POST'): mixed {
         if (empty($this->botToken)) {
             throw new Exception('Telegram Bot Token is not configured.');
         }

@@ -1,1 +1,17 @@
-{"items":[{"id":"609590d7-2a51-4392-a04e-c6ddf4bd480f","type":"folder","name":"new","parent_id":"root","created_at":1788215663,"updated_at":1788215663,"index_message_id":27},{"id":"b93c9997-cbb0-47c8-bc40-280acd5d18ab","type":"folder","name":"latest","parent_id":"root","created_at":1788215683,"updated_at":1788215683,"index_message_id":28},{"id":"b74bd51c-0075-4ec0-a7e2-bcde74409216","type":"file","name":"newst.json","size":1386,"mime_type":"application/json","parent_id":"609590d7-2a51-4392-a04e-c6ddf4bd480f","chunks":[{"part":1,"message_id":10,"file_id":"BQACAgUAAyEGAATtnfPFAAMKapYCDO5Xf0L5JjQIj6gc-6DiZK0AAscjAAJZKrBUlup8fXzlTAABPQQ","size":1386}],"created_at":1788215820,"updated_at":1788217189,"index_message_id":31}],"pinned_message_id":0,"delta_count":4,"total_items":3,"last_synced_at":1788216300}
+{
+    "items": [
+        {
+            "id": "3f16d1ab-3062-4706-b089-9840e5db6bd6",
+            "type": "folder",
+            "name": "new",
+            "parent_id": "root",
+            "created_at": 1788217396,
+            "updated_at": 1788217599,
+            "index_message_id": 32
+        }
+    ],
+    "pinned_message_id": 0,
+    "delta_count": 6,
+    "total_items": 1,
+    "last_synced_at": 1788217399
+}
