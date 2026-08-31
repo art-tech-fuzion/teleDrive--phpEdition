@@ -124,9 +124,10 @@ try {
             Auth::requireAuth();
             $parentId = $_GET['parent_id'] ?? 'root';
             $search   = trim($_GET['search'] ?? '');
+            $forceRefresh = !empty($_GET['refresh']) || !empty($_GET['force_remote']);
 
             $engine = new StorageEngine();
-            $data   = $engine->getFileSystemIndex();
+            $data   = $engine->getFileSystemIndex($forceRefresh);
             $items  = $data['items'];
 
             $filtered = [];

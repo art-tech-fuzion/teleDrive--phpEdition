@@ -112,7 +112,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 300);
     };
 
-    refreshBtn.onclick = () => loadFolder(state.currentFolderId);
+    refreshBtn.onclick = () => {
+        TeleDrive.toast('Syncing with Telegram Cloud...', 'info', 1500);
+        loadFolder(state.currentFolderId, '', true);
+    };
 
     // 5. Logout Action
     logoutBtn.onclick = async () => {
@@ -129,7 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // 5. Load Folder Items with Skeleton Buffer
-    async function loadFolder(folderId, search = '') {
+    async function loadFolder(folderId, search = '', forceRefresh = false) {
         state.currentFolderId = folderId;
         
         // Show instant skeleton buffer to prevent empty flash
@@ -137,18 +140,32 @@ document.addEventListener('DOMContentLoaded', () => {
         renderBreadcrumbs();
 
         try {
-            const url = `api/index.php?action=files.list&parent_id=${encodeURIComponent(folderId)}&search=${encodeURIComponent(search)}`;
+            let url = `api/index.php?action=files.list&parent_id=${encodeURIComponent(folderId)}&search=${encodeURIComponent(search)}`;
+            if (forceRefresh) {
+                url += '&refresh=1';
+            }
             const res = await fetch(url);
-            const data = await res.json();
+            const rawText = await res.text();
+            let data = null;
+            try {
+                data = JSON.parse(rawText);
+            } catch (jsonErr) {
+                throw new Error(rawText.replace(/<[^>]*>?/gm, '').trim() || 'Server returned invalid response');
+            }
 
-            if (data.success) {
+            if (data && data.success) {
                 state.items = data.items || [];
                 renderItems();
+                if (forceRefresh) {
+                    TeleDrive.toast('Index synchronized with Telegram.', 'success', 2000);
+                }
             } else {
-                TeleDrive.toast(data.error || 'Failed to load files.', 'error');
+                renderItems();
+                TeleDrive.toast((data && data.error) || 'Failed to load files.', 'error');
             }
         } catch (err) {
             console.error('Error loading files:', err);
+            renderItems(); // Always clear skeleton buffer so screen never freezes
             TeleDrive.toast(`Error loading files: ${err.message || err}`, 'error');
         }
     }
@@ -601,16 +618,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 formData.append('id', item.id);
 
                 const res = await apiFetch('api/index.php', { method: 'POST', body: formData });
-                const data = await res.json();
+                const rawText = await res.text();
+                let data = null;
+                try {
+                    data = JSON.parse(rawText);
+                } catch (jsonErr) {
+                    throw new Error(rawText.replace(/<[^>]*>?/gm, '').trim() || 'Server returned invalid response');
+                }
 
-                if (data.success) {
+                if (data && data.success) {
                     TeleDrive.toast('Item deleted from Telegram storage.', 'success');
                     await loadFolder(state.currentFolderId);
                 } else {
-                    TeleDrive.toast(data.error || 'Failed to delete item.', 'error');
+                    TeleDrive.toast((data && data.error) || 'Failed to delete item.', 'error');
                 }
             } catch (err) {
-                TeleDrive.toast('Error deleting item.', 'error');
+                console.error('Error deleting item:', err);
+                TeleDrive.toast(`Error deleting item: ${err.message || err}`, 'error');
             }
         }
     }

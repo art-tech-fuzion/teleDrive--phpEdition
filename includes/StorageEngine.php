@@ -60,7 +60,7 @@ class StorageEngine {
 
         $cacheFile = $this->getCachePath();
 
-        // 1. Check local cache first only if it has valid items
+        // 1. Check local cache first only if it has valid items and forceRemote is not requested
         if (!$forceRemote && file_exists($cacheFile)) {
             $cached = json_decode(@file_get_contents($cacheFile), true);
             if (is_array($cached) && !empty($cached['items'])) {
@@ -89,7 +89,7 @@ class StorageEngine {
             error_log("Failed to fetch getChat for index channel: " . $e->getMessage());
         }
 
-        // 3. Download and parse pinned master_manifest.json
+        // 3. Download and parse pinned master_manifest.json (if present)
         if ($pinnedDocFileId) {
             try {
                 $manifestJson = $this->telegram->downloadFileContent($pinnedDocFileId);
@@ -105,17 +105,87 @@ class StorageEngine {
             }
         }
 
-        // 4. Update local cache with latest data
+        // 4. Detect top message watermark in Index Channel
+        $topMsgId = 0;
+        try {
+            $ping = $this->telegram->sendMessage($this->indexChannel, "<!--sync-->");
+            $topMsgId = (int)($ping['message_id'] ?? 0);
+            if ($topMsgId > 0) {
+                $this->telegram->deleteMessage($this->indexChannel, $topMsgId);
+            }
+        } catch (Exception $e) {
+            error_log("Top watermark detection note: " . $e->getMessage());
+        }
+
+        // Determine fast scan range (maximum 8 recent messages to guarantee sub-second execution)
+        if ($topMsgId > 0) {
+            $endMsgId   = $topMsgId - 1;
+            $startBound = ($pinnedMsgId > 0) ? ($pinnedMsgId + 1) : 1;
+            $startMsgId = max($startBound, $endMsgId - 8);
+        } else {
+            $startMsgId = 1;
+            $endMsgId   = 0;
+        }
+
+        // 5. Scan recent delta messages in fast window
+        for ($scanId = $startMsgId; $scanId <= $endMsgId; $scanId++) {
+            try {
+                $fwdMsg = $this->telegram->forwardMessage($this->storageChannel, $this->indexChannel, $scanId);
+                if (!empty($fwdMsg) && isset($fwdMsg['message_id'])) {
+                    $this->telegram->deleteMessage($this->storageChannel, (int)$fwdMsg['message_id']);
+
+                    $text = $fwdMsg['text'] ?? $fwdMsg['caption'] ?? '';
+                    $cleanJson = strip_tags(html_entity_decode($text, ENT_QUOTES, 'UTF-8'));
+                    $parsed = json_decode($cleanJson, true);
+
+                    if (is_array($parsed)) {
+                        // Skip deleted / tombstone items
+                        if (!empty($parsed['deleted']) && !empty($parsed['id'])) {
+                            unset($items[$parsed['id']]);
+                            continue;
+                        }
+                        if (isset($parsed['id'], $parsed['type'])) {
+                            $parsed['index_message_id'] = $scanId;
+                            $items[$parsed['id']] = $parsed;
+                            $deltaCount++;
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                // Skip gap / missing message
+            }
+        }
+
+        // 6. If delta messages touch 50, merge, upload new document, PIN it, and UNPIN the old document
+        if ($deltaCount >= self::COMPACTION_THRESHOLD) {
+            $newPinnedId = $this->rebuildAndPinManifest($items);
+            if ($newPinnedId > 0) {
+                if ($pinnedMsgId > 0 && $pinnedMsgId !== $newPinnedId) {
+                    $this->telegram->unpinChatMessage($this->indexChannel, $pinnedMsgId);
+                }
+                $pinnedMsgId = $newPinnedId;
+                $deltaCount = 0;
+            }
+        }
+
+        // 7. Cache protection: if scan returned empty but valid cache existed, retain cache
+        if (empty($items) && !$pinnedDocFileId && file_exists($cacheFile)) {
+            $oldCached = json_decode(@file_get_contents($cacheFile), true);
+            if (is_array($oldCached) && !empty($oldCached['items'])) {
+                return $oldCached;
+            }
+        }
+
+        // 8. Update local cache with latest data
         $indexData = [
             'items'            => array_values($items),
             'pinned_message_id'=> $pinnedMsgId,
             'delta_count'      => $deltaCount,
-            'total_items'      => count($items)
+            'total_items'      => count($items),
+            'last_synced_at'   => time()
         ];
 
-        if (!empty($items) || $pinnedDocFileId) {
-            @file_put_contents($cacheFile, json_encode($indexData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-        }
+        @file_put_contents($cacheFile, json_encode($indexData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
         return $indexData;
     }
@@ -174,6 +244,7 @@ class StorageEngine {
         $index = $this->getFileSystemIndex();
         $items = $index['items'];
         $deltaCount = (int)($index['delta_count'] ?? 0) + 1;
+        $pinnedMsgId = (int)($index['pinned_message_id'] ?? 0);
 
         // Merge / Upsert item
         $found = false;
@@ -194,6 +265,9 @@ class StorageEngine {
             // Merge all items, upload master_manifest.json document and PIN it
             $newPinnedId = $this->rebuildAndPinManifest($items);
             if ($newPinnedId > 0) {
+                if ($pinnedMsgId > 0 && $pinnedMsgId !== $newPinnedId) {
+                    $this->telegram->unpinChatMessage($this->indexChannel, $pinnedMsgId);
+                }
                 $index['pinned_message_id'] = $newPinnedId;
                 $deltaCount = 0; // Reset delta counter after 50-message checkpoint
             }
@@ -203,7 +277,7 @@ class StorageEngine {
         $index['items'] = array_values($items);
         $index['delta_count'] = $deltaCount;
         $index['total_items'] = count($items);
-        @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        @file_put_contents($this->getCachePath(), json_encode($index, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
         return $metadata;
     }
@@ -334,12 +408,16 @@ class StorageEngine {
                     }
                 }
 
-                // 2. Delete individual metadata message from Index Channel (safely caught)
+                // 2. Delete individual metadata message from Index Channel (with tombstone fallback)
                 if (isset($item['index_message_id']) && $item['index_message_id'] > 0) {
-                    try {
-                        $this->telegram->deleteMessage($this->indexChannel, (int)$item['index_message_id']);
-                    } catch (Exception $e) {
-                        error_log("Failed to delete index message: " . $e->getMessage());
+                    $deleted = $this->telegram->deleteMessage($this->indexChannel, (int)$item['index_message_id']);
+                    if (!$deleted) {
+                        try {
+                            $tombstone = json_encode(['id' => $item['id'], 'deleted' => true]);
+                            $this->telegram->editMessageText($this->indexChannel, (int)$item['index_message_id'], "<code>" . htmlspecialchars($tombstone) . "</code>");
+                        } catch (Exception $e) {
+                            error_log("Failed to tombstone index message: " . $e->getMessage());
+                        }
                     }
                 }
             } else {
@@ -347,10 +425,10 @@ class StorageEngine {
             }
         }
 
-        // Update local cache without creating new document on every single delete
+        // Update local cache
         $index['items'] = array_values($remainingItems);
         $index['total_items'] = count($remainingItems);
-        @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        @file_put_contents($this->getCachePath(), json_encode($index, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
         return [
             'deleted_count' => $deletedCount,

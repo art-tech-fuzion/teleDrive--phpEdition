@@ -91,6 +91,17 @@ class TelegramClient {
     }
 
     /**
+     * Forward a message from one chat to another (used to read message contents)
+     */
+    public function forwardMessage(string|int $toChatId, string|int $fromChatId, int $messageId): array {
+        return $this->request('forwardMessage', [
+            'chat_id'      => $toChatId,
+            'from_chat_id' => $fromChatId,
+            'message_id'   => $messageId
+        ]);
+    }
+
+    /**
      * Edit an existing message text (for rename / in-place updates)
      */
     public function editMessageText(string|int $chatId, int $messageId, string $text): array {
