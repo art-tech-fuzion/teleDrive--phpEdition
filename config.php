@@ -77,9 +77,15 @@ if (empty(SESSION_SECRET) || SESSION_SECRET === 'teledrive_default_session_secre
     exit('TeleDrive: SESSION_SECRET is not configured. Please set a strong, unique value in your .env file.');
 }
 
-// Ensure chunk directory exists
-if (!is_dir(TEMP_CHUNK_DIR)) {
-    @mkdir(TEMP_CHUNK_DIR, 0750, true);
+// Ensure temp directories exist and auto-generate .htaccess security block
+foreach ([TEMP_CHUNK_DIR, __DIR__ . '/temp'] as $dir) {
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0750, true);
+    }
+    $ht = $dir . '/.htaccess';
+    if (!file_exists($ht)) {
+        @file_put_contents($ht, "# TeleDrive — Deny all direct browser access\n<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n    Order deny,allow\n    Deny from all\n</IfModule>\n");
+    }
 }
 
 // 3. Secure Session Initialization

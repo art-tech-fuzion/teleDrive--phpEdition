@@ -17,4 +17,3 @@ code-review-graph
 
 # Sensitive runtime data (Telegram file IDs, partial uploads, cached index)
 temp_chunks/
-temp/
