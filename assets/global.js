@@ -193,3 +193,113 @@ window.TeleDrive = window.TeleDrive || {};
         });
     };
 })();
+
+/**
+ * Custom Input Prompt Dialog Modal Manager
+ */
+(function() {
+    TeleDrive.prompt = function(options = {}) {
+        return new Promise((resolve) => {
+            const title = options.title || 'Enter Value';
+            const message = options.message || '';
+            const defaultValue = options.defaultValue || '';
+            const placeholder = options.placeholder || 'Type here...';
+            const confirmText = options.confirmText || 'Save';
+            const cancelText = options.cancelText || 'Cancel';
+
+            const modalOverlay = document.createElement('div');
+            modalOverlay.className = 'td-modal-overlay';
+            modalOverlay.style.cssText = `
+                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                background: var(--bg-overlay, rgba(11, 15, 23, 0.8));
+                backdrop-filter: blur(6px);
+                display: flex; align-items: center; justify-content: center;
+                z-index: 9998; opacity: 0;
+                transition: opacity 0.2s ease;
+            `;
+
+            const modalBox = document.createElement('div');
+            modalBox.style.cssText = `
+                background: var(--bg-surface, #1e293b);
+                border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+                border-radius: var(--radius-lg, 12px);
+                padding: 24px; width: 90%; max-width: 440px;
+                box-shadow: var(--shadow-xl, 0 20px 45px rgba(0,0,0,0.5));
+                transform: scale(0.95);
+                transition: transform 0.2s ease;
+            `;
+
+            modalBox.innerHTML = `
+                <h3 style="font-size: var(--font-size-lg, 18px); font-weight: var(--font-weight-semibold, 600); margin-bottom: 6px; color: var(--text-main, #f8fafc);">${title}</h3>
+                ${message ? `<p style="font-size: var(--font-size-sm, 14px); color: var(--text-secondary, #94a3b8); margin-bottom: 16px;">${message}</p>` : ''}
+                <div style="margin-bottom: 20px; ${message ? '' : 'margin-top: 14px;'}">
+                    <input type="text" id="td-prompt-input" value="${escapeHtml(defaultValue)}" placeholder="${placeholder}" style="
+                        width: 100%; padding: 10px 14px;
+                        background: var(--bg-body, #0b0f17);
+                        border: 1px solid var(--border-color, rgba(255,255,255,0.15));
+                        border-radius: var(--radius-md, 8px);
+                        color: var(--text-main, #f8fafc);
+                        font-size: var(--font-size-sm, 14px);
+                        outline: none; transition: border-color 0.2s ease;
+                    ">
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                    <button id="td-prompt-cancel" style="
+                        background: transparent;
+                        border: 1px solid var(--border-color, rgba(255,255,255,0.15));
+                        color: var(--text-main, #f8fafc);
+                        padding: 8px 16px;
+                        border-radius: var(--radius-sm, 6px);
+                        cursor: pointer; font-weight: 500; font-size: 13px;
+                    ">${cancelText}</button>
+                    <button id="td-prompt-confirm" style="
+                        background: var(--color-primary, #3b82f6);
+                        border: none; color: #ffffff;
+                        padding: 8px 20px;
+                        border-radius: var(--radius-sm, 6px);
+                        cursor: pointer; font-weight: 600; font-size: 13px;
+                    ">${confirmText}</button>
+                </div>
+            `;
+
+            function escapeHtml(str) {
+                return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            }
+
+            modalOverlay.appendChild(modalBox);
+            document.body.appendChild(modalOverlay);
+
+            const input = modalBox.querySelector('#td-prompt-input');
+            input.focus();
+            input.select();
+
+            requestAnimationFrame(() => {
+                modalOverlay.style.opacity = '1';
+                modalBox.style.transform = 'scale(1)';
+            });
+
+            const cleanup = () => {
+                modalOverlay.style.opacity = '0';
+                modalBox.style.transform = 'scale(0.95)';
+                setTimeout(() => modalOverlay.remove(), 200);
+            };
+
+            modalBox.querySelector('#td-prompt-cancel').onclick = () => {
+                cleanup();
+                resolve(null);
+            };
+
+            const handleConfirm = () => {
+                const val = input.value.trim();
+                cleanup();
+                resolve(val);
+            };
+
+            modalBox.querySelector('#td-prompt-confirm').onclick = handleConfirm;
+            input.onkeydown = (e) => {
+                if (e.key === 'Enter') handleConfirm();
+                if (e.key === 'Escape') { cleanup(); resolve(null); }
+            };
+        });
+    };
+})();

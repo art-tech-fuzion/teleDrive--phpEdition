@@ -59,7 +59,17 @@ document.addEventListener('DOMContentLoaded', () => {
         listView.style.display = 'block';
     };
 
-    // 3. Search & Refresh
+    // 3. Navigation (All Files sidebar button)
+    const navAllFiles = document.querySelector('.td-nav-item[data-folder-id="root"]');
+    if (navAllFiles) {
+        navAllFiles.onclick = (e) => {
+            e.preventDefault();
+            state.folderPath = [{ id: 'root', name: 'My Drive' }];
+            loadFolder('root');
+        };
+    }
+
+    // 4. Search & Refresh
     let searchDebounce = null;
     searchInput.oninput = (e) => {
         clearTimeout(searchDebounce);
@@ -70,7 +80,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     refreshBtn.onclick = () => loadFolder(state.currentFolderId);
 
-    // 4. Logout Action
+    // 5. Logout Action
     logoutBtn.onclick = async () => {
         const confirmed = await TeleDrive.confirm({
             title: 'Sign Out',
@@ -188,6 +198,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
                 <div class="td-grid-card-actions">
+                    ${item.type === 'file' ? '<button class="td-btn-icon td-btn-download" title="Download">⬇️</button>' : ''}
                     <button class="td-btn-icon td-btn-rename" title="Rename">✏️</button>
                     <button class="td-btn-icon td-btn-delete" title="Delete">🗑️</button>
                 </div>
@@ -200,6 +211,13 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             // Actions
+            if (item.type === 'file') {
+                card.querySelector('.td-btn-download').onclick = (e) => {
+                    e.stopPropagation();
+                    startControlledDownload(item);
+                };
+            }
+
             card.querySelector('.td-btn-rename').onclick = (e) => {
                 e.stopPropagation();
                 handleRename(item);
@@ -230,8 +248,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${item.type === 'folder' ? '—' : formatBytes(item.size)}</td>
                 <td>${formatDate(item.updated_at || item.created_at)}</td>
                 <td>
-                    <button class="td-btn-icon td-btn-rename" title="Rename">✏️</button>
-                    <button class="td-btn-icon td-btn-delete" title="Delete">🗑️</button>
+                    <div class="td-table-actions">
+                        ${item.type === 'file' ? '<button class="td-btn-icon td-btn-download" title="Download">⬇️</button>' : ''}
+                        <button class="td-btn-icon td-btn-rename" title="Rename">✏️</button>
+                        <button class="td-btn-icon td-btn-delete" title="Delete">🗑️</button>
+                    </div>
                 </td>
             `;
 
@@ -239,6 +260,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (e.target.closest('button')) return;
                 handleItemClick(item);
             };
+
+            if (item.type === 'file') {
+                tr.querySelector('.td-btn-download').onclick = (e) => {
+                    e.stopPropagation();
+                    startControlledDownload(item);
+                };
+            }
 
             tr.querySelector('.td-btn-rename').onclick = (e) => {
                 e.stopPropagation();
@@ -267,9 +295,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // 9. Preview Modal Handler
     function openPreview(item) {
         previewName.textContent = item.name;
-        const downloadUrl = `api/index.php?action=files.download&id=${encodeURIComponent(item.id)}`;
         const previewUrl = `api/index.php?action=files.preview&id=${encodeURIComponent(item.id)}`;
-        previewDownload.href = downloadUrl;
+        
+        previewDownload.onclick = (e) => {
+            e.preventDefault();
+            startControlledDownload(item);
+        };
 
         previewBody.innerHTML = '';
         const mime = item.mime_type || '';
@@ -298,9 +329,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div style="color:var(--text-secondary); text-align:center;">
                     <div style="font-size:48px; margin-bottom:12px;">📄</div>
                     <p>No inline preview available for this file type.</p>
-                    <a href="${downloadUrl}" class="td-btn-primary td-btn-sm" style="margin-top:12px; display:inline-block;">Download File</a>
+                    <button class="td-btn-primary td-btn-sm" style="margin-top:12px;" id="td-preview-alt-download">Download File</button>
                 </div>
             `;
+            const altBtn = previewBody.querySelector('#td-preview-alt-download');
+            if (altBtn) {
+                altBtn.onclick = () => startControlledDownload(item);
+            }
         }
 
         previewModal.style.display = 'flex';
@@ -311,10 +346,19 @@ document.addEventListener('DOMContentLoaded', () => {
         previewBody.innerHTML = '';
     };
 
-    // 10. Folder Creation
+    // 10. Folder Creation with custom modal dialog
     newFolderBtn.onclick = async () => {
-        const folderName = prompt('Enter new folder name:');
+        const folderName = await TeleDrive.prompt({
+            title: 'Create New Folder',
+            message: 'Enter a name for the new folder:',
+            placeholder: 'Folder name (e.g. Documents, Projects)',
+            confirmText: 'Create Folder',
+            defaultValue: ''
+        });
+
         if (!folderName || !folderName.trim()) return;
+
+        TeleDrive.toast('Creating folder...', 'info', 2000);
 
         try {
             const formData = new FormData();
@@ -337,10 +381,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // 11. Rename Item
+    // 11. Rename Item with Custom Modal Dialog & Loading Buffer
     async function handleRename(item) {
-        const newName = prompt(`Rename ${item.type}:`, item.name);
+        const newName = await TeleDrive.prompt({
+            title: `Rename ${item.type === 'folder' ? 'Folder' : 'File'}`,
+            message: `Enter a new name for "${item.name}":`,
+            defaultValue: item.name,
+            placeholder: 'New name',
+            confirmText: 'Rename'
+        });
+
         if (!newName || !newName.trim() || newName.trim() === item.name) return;
+
+        TeleDrive.toast(`Renaming ${item.type} to "${newName.trim()}"...`, 'info', 2000);
 
         try {
             const formData = new FormData();
@@ -349,16 +402,23 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('name', newName.trim());
 
             const res = await fetch('api/index.php', { method: 'POST', body: formData });
-            const data = await res.json();
+            const rawText = await res.text();
+            let data = null;
+            try {
+                data = JSON.parse(rawText);
+            } catch (jsonErr) {
+                throw new Error(rawText.replace(/<[^>]*>?/gm, '').trim() || 'Server returned invalid response');
+            }
 
-            if (data.success) {
-                TeleDrive.toast('Renamed successfully.', 'success');
-                loadFolder(state.currentFolderId);
+            if (data && data.success) {
+                TeleDrive.toast(`Renamed to "${newName.trim()}" successfully.`, 'success');
+                await loadFolder(state.currentFolderId);
             } else {
-                TeleDrive.toast(data.error || 'Failed to rename item.', 'error');
+                TeleDrive.toast((data && data.error) || 'Failed to rename item.', 'error');
             }
         } catch (err) {
-            TeleDrive.toast('Error renaming item.', 'error');
+            console.error('Error renaming item:', err);
+            TeleDrive.toast(`Error renaming item: ${err.message || err}`, 'error');
         }
     }
 
@@ -373,6 +433,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         if (confirmed) {
+            TeleDrive.toast(`Deleting ${item.name}...`, 'info', 2000);
             try {
                 const formData = new FormData();
                 formData.append('action', 'items.delete');
@@ -383,7 +444,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (data.success) {
                     TeleDrive.toast('Item deleted from Telegram storage.', 'success');
-                    loadFolder(state.currentFolderId);
+                    await loadFolder(state.currentFolderId);
                 } else {
                     TeleDrive.toast(data.error || 'Failed to delete item.', 'error');
                 }
@@ -393,7 +454,92 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 13. File Upload Trigger & Input Handlers
+    // 13. Controlled Streaming Download with Progress Modal & Cancel
+    async function startControlledDownload(fileItem) {
+        const controller = new AbortController();
+        const signal = controller.signal;
+
+        // Create and show download status modal
+        const overlay = document.createElement('div');
+        overlay.className = 'td-modal-overlay';
+        overlay.style.cssText = `
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: var(--bg-overlay, rgba(11, 15, 23, 0.8));
+            backdrop-filter: blur(4px);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 9999; opacity: 1;
+        `;
+
+        const box = document.createElement('div');
+        box.style.cssText = `
+            background: var(--bg-surface, #1e293b);
+            border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+            border-radius: var(--radius-lg, 12px);
+            padding: 24px; width: 90%; max-width: 400px;
+            box-shadow: var(--shadow-xl);
+            display: flex; flex-direction: column; gap: 16px;
+        `;
+
+        box.innerHTML = `
+            <div style="display:flex; align-items:center; gap:12px;">
+                <div class="td-spinner" style="width:22px; height:22px; border:2px solid rgba(59,130,246,0.3); border-top-color:#3b82f6; border-radius:50%; animation:tdSpin 0.8s linear infinite;"></div>
+                <div>
+                    <h3 style="font-size:16px; font-weight:600; color:var(--text-main);">Downloading File</h3>
+                    <p style="font-size:12px; color:var(--text-secondary); max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(fileItem.name)}</p>
+                </div>
+            </div>
+            <p style="font-size:13px; color:var(--text-secondary); line-height:1.4;">Streaming binary chunks from Telegram Cloud directly to your browser...</p>
+            <div style="display:flex; justify-content:flex-end;">
+                <button id="td-cancel-download-btn" style="
+                    background: transparent; border: 1px solid var(--border-color);
+                    color: var(--color-danger, #ef4444); padding: 6px 14px;
+                    border-radius: 6px; cursor: pointer; font-size:13px; font-weight:500;
+                ">Cancel Download</button>
+            </div>
+        `;
+
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        let isCancelled = false;
+        box.querySelector('#td-cancel-download-btn').onclick = () => {
+            isCancelled = true;
+            controller.abort();
+            overlay.remove();
+            TeleDrive.toast('Download cancelled.', 'warning');
+        };
+
+        try {
+            const downloadUrl = `api/index.php?action=files.download&id=${encodeURIComponent(fileItem.id)}`;
+            const response = await fetch(downloadUrl, { signal });
+
+            if (!response.ok) {
+                throw new Error(`Server returned HTTP ${response.status}`);
+            }
+
+            const blob = await response.blob();
+            if (!isCancelled) {
+                const blobUrl = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = fileItem.name;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(blobUrl);
+                overlay.remove();
+                TeleDrive.toast(`Download complete: ${fileItem.name}`, 'success');
+            }
+        } catch (err) {
+            overlay.remove();
+            if (!isCancelled) {
+                console.error('Download error:', err);
+                TeleDrive.toast(`Download failed: ${err.message}`, 'error');
+            }
+        }
+    }
+
+    // 14. File Upload Trigger & Input Handlers
     uploadTrigger.onclick = () => fileInput.click();
     fileInput.onchange = (e) => {
         if (e.target.files.length > 0) {
@@ -402,7 +548,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // 14. Drag and Drop Support
+    // 15. Drag and Drop Support
     let dragCounter = 0;
     dropzone.ondragenter = (e) => {
         e.preventDefault();
@@ -429,9 +575,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    queueClose.onclick = () => uploadQueue.style.display = 'none';
+    queueClose.onclick = () => {
+        uploadQueue.style.display = 'none';
+    };
 
-    // 15. Client-Side Chunked File Upload Engine
+    // 16. Client-Side Chunked File Upload Engine with Cancellation
     async function handleFilesUpload(files) {
         uploadQueue.style.display = 'block';
 
@@ -439,27 +587,52 @@ document.addEventListener('DOMContentLoaded', () => {
             await uploadSingleFile(file);
         }
 
-        loadFolder(state.currentFolderId);
+        // Auto-hide upload queue once everything completes
+        setTimeout(() => {
+            if (queueItems.children.length === 0) {
+                uploadQueue.style.display = 'none';
+            }
+        }, 2000);
+
+        await loadFolder(state.currentFolderId);
     }
 
     async function uploadSingleFile(file) {
         const uploadId = 'up_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
         const totalChunks = Math.ceil(file.size / state.chunkSize) || 1;
+        const uploadController = new AbortController();
+        let isCancelled = false;
 
-        // Create UI Item in queue
+        // Create UI Item in queue with Cancel button
         const qItem = document.createElement('div');
         qItem.className = 'td-queue-item';
         qItem.innerHTML = `
-            <div class="td-queue-item-name">${escapeHtml(file.name)} (${formatBytes(file.size)})</div>
+            <div class="td-queue-item-top">
+                <div class="td-queue-item-name">${escapeHtml(file.name)} (${formatBytes(file.size)})</div>
+                <button class="td-queue-item-cancel" title="Cancel upload">✕ Cancel</button>
+            </div>
             <div class="td-queue-progress-bar">
                 <div class="td-queue-progress-fill"></div>
             </div>
         `;
         queueItems.appendChild(qItem);
         const fillBar = qItem.querySelector('.td-queue-progress-fill');
+        const cancelBtn = qItem.querySelector('.td-queue-item-cancel');
+
+        cancelBtn.onclick = () => {
+            isCancelled = true;
+            uploadController.abort();
+            qItem.remove();
+            TeleDrive.toast(`Upload cancelled: ${file.name}`, 'warning');
+            if (queueItems.children.length === 0) {
+                uploadQueue.style.display = 'none';
+            }
+        };
 
         try {
             for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+                if (isCancelled) return;
+
                 const start = chunkIdx * state.chunkSize;
                 const end = Math.min(start + state.chunkSize, file.size);
                 const chunkBlob = file.slice(start, end);
@@ -472,7 +645,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 formData.append('filename', file.name);
                 formData.append('chunk', chunkBlob, file.name);
 
-                const res = await fetch('api/index.php', { method: 'POST', body: formData });
+                const res = await fetch('api/index.php', { 
+                    method: 'POST', 
+                    body: formData,
+                    signal: uploadController.signal
+                });
                 const data = await res.json();
 
                 if (!data.success) {
@@ -484,6 +661,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 fillBar.style.width = `${progress}%`;
             }
 
+            if (isCancelled) return;
+
             // Complete and Send to Telegram Storage Channel
             const completeData = new FormData();
             completeData.append('action', 'files.complete_upload');
@@ -494,22 +673,35 @@ document.addEventListener('DOMContentLoaded', () => {
             completeData.append('parent_id', state.currentFolderId);
             completeData.append('total_chunks', totalChunks);
 
-            const completeRes = await fetch('api/index.php', { method: 'POST', body: completeData });
+            const completeRes = await fetch('api/index.php', { 
+                method: 'POST', 
+                body: completeData,
+                signal: uploadController.signal
+            });
             const completeResult = await completeRes.json();
 
             if (completeResult.success) {
                 fillBar.style.width = '100%';
+                cancelBtn.style.display = 'none';
                 TeleDrive.toast(`Uploaded: ${file.name}`, 'success');
                 setTimeout(() => {
                     qItem.style.opacity = '0';
-                    setTimeout(() => qItem.remove(), 300);
-                }, 1500);
+                    qItem.style.transform = 'translateX(20px)';
+                    setTimeout(() => {
+                        qItem.remove();
+                        if (queueItems.children.length === 0) {
+                            uploadQueue.style.display = 'none';
+                        }
+                    }, 300);
+                }, 1200);
             } else {
                 throw new Error(completeResult.error || 'Failed to complete Telegram storage upload');
             }
         } catch (err) {
-            TeleDrive.toast(`Upload failed for ${file.name}: ${err.message}`, 'error');
-            fillBar.style.backgroundColor = 'var(--color-danger)';
+            if (!isCancelled) {
+                TeleDrive.toast(`Upload failed for ${file.name}: ${err.message}`, 'error');
+                fillBar.style.backgroundColor = 'var(--color-danger)';
+            }
         }
     }
 

@@ -12,6 +12,9 @@ class Helpers {
      * Send JSON response and terminate script
      */
     public static function jsonResponse(array $data, int $statusCode = 200): void {
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
         http_response_code($statusCode);
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);

@@ -4,45 +4,45 @@
    ========================================================================== */
 
 :root {
-  /* Brand Color Palette */
-  --color-primary: #3b82f6;
-  --color-primary-hover: #2563eb;
-  --color-primary-light: rgba(59, 130, 246, 0.12);
-  --color-primary-glow: rgba(59, 130, 246, 0.25);
+  /* Brand Color Palette - Refined Slate & Blue */
+  --color-primary: #38bdf8;
+  --color-primary-hover: #0ea5e9;
+  --color-primary-light: rgba(56, 189, 248, 0.1);
+  --color-primary-glow: rgba(56, 189, 248, 0.2);
   
-  --color-secondary: #6366f1;
-  --color-accent: #06b6d4;
-  --color-accent-gradient: linear-gradient(135deg, #3b82f6 0%, #6366f1 50%, #8b5cf6 100%);
+  --color-secondary: #818cf8;
+  --color-accent: #38bdf8;
+  --color-accent-gradient: linear-gradient(135deg, #38bdf8 0%, #6366f1 100%);
   
   /* Status Colors */
-  --color-success: #10b981;
-  --color-success-bg: rgba(16, 185, 129, 0.12);
-  --color-warning: #f59e0b;
-  --color-warning-bg: rgba(245, 158, 11, 0.12);
-  --color-danger: #ef4444;
-  --color-danger-hover: #dc2626;
-  --color-danger-bg: rgba(239, 68, 68, 0.12);
-  --color-info: #0284c7;
+  --color-success: #34d399;
+  --color-success-bg: rgba(52, 211, 153, 0.12);
+  --color-warning: #fbbf24;
+  --color-warning-bg: rgba(251, 191, 36, 0.12);
+  --color-danger: #f87171;
+  --color-danger-hover: #ef4444;
+  --color-danger-bg: rgba(248, 113, 113, 0.12);
+  --color-info: #38bdf8;
 
   /* Neutrals & Dark Theme Surface Colors */
-  --bg-body: #0b0f17;
+  --bg-body: #090d16;
   --bg-sidebar: #0f172a;
-  --bg-surface: #1e293b;
-  --bg-surface-elevated: #273549;
-  --bg-surface-hover: #334155;
-  --bg-overlay: rgba(11, 15, 23, 0.75);
-  --bg-glass: rgba(30, 41, 59, 0.7);
+  --bg-surface: #141e33;
+  --bg-surface-elevated: #1e2942;
+  --bg-surface-hover: #263554;
+  --bg-overlay: rgba(9, 13, 22, 0.82);
+  --bg-glass: rgba(20, 30, 51, 0.75);
 
   /* Text & Foreground Colors */
-  --text-main: #f8fafc;
+  --text-main: #f1f5f9;
   --text-secondary: #94a3b8;
   --text-muted: #64748b;
-  --text-inverse: #0f172a;
+  --text-inverse: #090d16;
 
   /* Borders & Dividers */
-  --border-color: rgba(255, 255, 255, 0.08);
-  --border-color-hover: rgba(255, 255, 255, 0.18);
-  --border-focus: #3b82f6;
+  --border-color: rgba(255, 255, 255, 0.07);
+  --border-color-hover: rgba(255, 255, 255, 0.15);
+  --border-focus: #38bdf8;
 
   /* Typography */
   --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;

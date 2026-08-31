@@ -60,10 +60,10 @@ class StorageEngine {
 
         $cacheFile = $this->getCachePath();
 
-        // 1. Check local cache first for instant sub-second response
+        // 1. Check local cache first only if it has valid items
         if (!$forceRemote && file_exists($cacheFile)) {
             $cached = json_decode(@file_get_contents($cacheFile), true);
-            if (is_array($cached) && isset($cached['items'])) {
+            if (is_array($cached) && !empty($cached['items'])) {
                 return $cached;
             }
         }
@@ -105,6 +105,7 @@ class StorageEngine {
             }
         }
 
+        // 4. If remote fetch succeeded or returned items, update local cache
         $indexData = [
             'items'            => array_values($items),
             'pinned_message_id'=> $pinnedMsgId,
@@ -112,8 +113,9 @@ class StorageEngine {
             'total_items'      => count($items)
         ];
 
-        // Save local cache
-        @file_put_contents($cacheFile, json_encode($indexData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        if (!empty($items) || $pinnedDocFileId) {
+            @file_put_contents($cacheFile, json_encode($indexData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        }
 
         return $indexData;
     }
@@ -187,11 +189,14 @@ class StorageEngine {
         }
 
         // 3. Check 50-Message Compaction Threshold
-        if ($deltaCount >= self::COMPACTION_THRESHOLD || empty($index['pinned_message_id'])) {
-            // Rebuild, upload master_manifest.json document and PIN it
+        // Strictly only compact when reaching the 50th delta message
+        if ($deltaCount >= self::COMPACTION_THRESHOLD) {
+            // Merge all items, upload master_manifest.json document and PIN it
             $newPinnedId = $this->rebuildAndPinManifest($items);
-            $index['pinned_message_id'] = $newPinnedId;
-            $deltaCount = 0; // Reset delta counter after compaction checkpoint
+            if ($newPinnedId > 0) {
+                $index['pinned_message_id'] = $newPinnedId;
+                $deltaCount = 0; // Reset delta counter after 50-message checkpoint
+            }
         }
 
         // Save updated cache
@@ -225,7 +230,7 @@ class StorageEngine {
             throw new Exception("Item with ID {$id} not found.");
         }
 
-        // In-place edit of the index message if available
+        // In-place edit of the individual index message in Telegram Index Channel
         if (isset($target['index_message_id']) && $target['index_message_id'] > 0) {
             try {
                 $jsonPayload = json_encode($target, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -235,7 +240,7 @@ class StorageEngine {
             }
         }
 
-        // Update cache and rebuild manifest if needed
+        // Update local cache without re-uploading manifest document for single renames
         $index['items'] = array_values($items);
         @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
@@ -258,30 +263,34 @@ class StorageEngine {
         foreach ($items as $item) {
             if (isset($toDelete[$item['id']])) {
                 $deletedCount++;
-                // 1. Delete chunk messages from Storage Channel
+                // 1. Delete chunk messages from Storage Channel (safely caught)
                 if ($item['type'] === 'file' && !empty($item['chunks'])) {
                     foreach ($item['chunks'] as $chunk) {
                         if (isset($chunk['message_id'])) {
-                            $this->telegram->deleteMessage($this->storageChannel, (int)$chunk['message_id']);
+                            try {
+                                $this->telegram->deleteMessage($this->storageChannel, (int)$chunk['message_id']);
+                            } catch (Exception $e) {
+                                error_log("Failed to delete storage message: " . $e->getMessage());
+                            }
                         }
                     }
                 }
 
-                // 2. Delete individual metadata message from Index Channel
+                // 2. Delete individual metadata message from Index Channel (safely caught)
                 if (isset($item['index_message_id']) && $item['index_message_id'] > 0) {
-                    $this->telegram->deleteMessage($this->indexChannel, (int)$item['index_message_id']);
+                    try {
+                        $this->telegram->deleteMessage($this->indexChannel, (int)$item['index_message_id']);
+                    } catch (Exception $e) {
+                        error_log("Failed to delete index message: " . $e->getMessage());
+                    }
                 }
             } else {
                 $remainingItems[] = $item;
             }
         }
 
-        // Rebuild and pin updated manifest checkpoint
-        $newPinnedId = $this->rebuildAndPinManifest($remainingItems);
-
+        // Update local cache without creating new document on every single delete
         $index['items'] = array_values($remainingItems);
-        $index['pinned_message_id'] = $newPinnedId;
-        $index['delta_count'] = 0;
         $index['total_items'] = count($remainingItems);
         @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
