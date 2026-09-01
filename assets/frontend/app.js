@@ -1203,6 +1203,18 @@ document.addEventListener('DOMContentLoaded', () => {
             if (queueItems.children.length === 0) {
                 uploadQueue.style.display = 'none';
             }
+
+            // Immediately clean up temporary session directory on server
+            try {
+                const cancelForm = new FormData();
+                cancelForm.append('action', 'files.cancel_upload');
+                cancelForm.append('_csrf', getCsrfToken());
+                cancelForm.append('upload_id', uploadId);
+                apiFetch('api/index.php?action=files.cancel_upload', {
+                    method: 'POST',
+                    body: cancelForm
+                }).catch(() => {});
+            } catch (e) {}
         };
 
         const startTime = Date.now();

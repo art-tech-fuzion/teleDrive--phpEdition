@@ -97,4 +97,62 @@ class Helpers {
         }
         @rmdir($dir);
     }
+
+    /**
+     * Automatic garbage collector to clean up abandoned/interrupted upload session folders older than maxAge seconds
+     * Also purges any raw chunks uploaded to Telegram Storage Channel for abandoned sessions
+     */
+    public static function cleanStaleUploadSessions(int $maxAgeSeconds = 3600): int {
+        $tempDir = defined('TEMP_CHUNK_DIR') ? TEMP_CHUNK_DIR : sys_get_temp_dir();
+        if (!is_dir($tempDir)) {
+            return 0;
+        }
+
+        $cleaned = 0;
+        $now = time();
+        $items = @scandir($tempDir) ?: [];
+        $tg = null;
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..' || !str_starts_with($item, 'up_')) {
+                continue;
+            }
+
+            $itemPath = $tempDir . '/' . $item;
+            if (is_dir($itemPath)) {
+                $mtime = @filemtime($itemPath);
+                if ($mtime && ($now - $mtime) > $maxAgeSeconds) {
+                    // Check if any chunk batches were uploaded to Telegram Storage Channel
+                    $chunksFile = $itemPath . '/session_chunks.json';
+                    if (file_exists($chunksFile)) {
+                        $chunks = json_decode(@file_get_contents($chunksFile), true);
+                        if (is_array($chunks)) {
+                            $msgIds = [];
+                            foreach ($chunks as $c) {
+                                if (!empty($c['message_id'])) {
+                                    $msgIds[] = (int)$c['message_id'];
+                                }
+                            }
+                            if (!empty($msgIds) && defined('STORAGE_CHANNEL_ID') && !empty(STORAGE_CHANNEL_ID)) {
+                                if (!$tg) {
+                                    require_once __DIR__ . '/TelegramClient.php';
+                                    $tg = new TelegramClient();
+                                }
+                                try {
+                                    $tg->deleteMessagesBatch(STORAGE_CHANNEL_ID, $msgIds);
+                                } catch (\Exception $e) {
+                                    error_log("Failed to clean storage chunks for stale session: " . $e->getMessage());
+                                }
+                            }
+                        }
+                    }
+
+                    self::removeDir($itemPath);
+                    $cleaned++;
+                }
+            }
+        }
+
+        return $cleaned;
+    }
 }

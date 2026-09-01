@@ -463,10 +463,48 @@ try {
                 'chunks'    => $finalChunks,
             ]);
 
+            // Trigger non-blocking opportunistic garbage collection for stale sessions
+            Helpers::cleanStaleUploadSessions(1800);
+
             Helpers::success([
                 'item'        => $newEntry,
                 'needs_purge' => !empty($newEntry['needs_purge'])
             ], 'File uploaded and indexed successfully.');
+            break;
+
+        case 'files.cancel_upload':
+            Auth::requireAuth();
+            $uploadId = preg_replace('/[^\w\-]/', '', $_POST['upload_id'] ?? '');
+            if (!empty($uploadId)) {
+                $uploadSessionDir = TEMP_CHUNK_DIR . '/' . $uploadId;
+                if (is_dir($uploadSessionDir)) {
+                    // 1. Delete any chunk batches already uploaded to Telegram Storage Channel
+                    $chunksFile = "{$uploadSessionDir}/session_chunks.json";
+                    if (file_exists($chunksFile)) {
+                        $chunks = json_decode(@file_get_contents($chunksFile), true);
+                        if (is_array($chunks)) {
+                            $msgIds = [];
+                            foreach ($chunks as $c) {
+                                if (!empty($c['message_id'])) {
+                                    $msgIds[] = (int)$c['message_id'];
+                                }
+                            }
+                            if (!empty($msgIds)) {
+                                try {
+                                    $tg = new TelegramClient();
+                                    $tg->deleteMessagesBatch(STORAGE_CHANNEL_ID, $msgIds);
+                                } catch (Exception $e) {
+                                    error_log("Failed to delete cancelled storage chunks: " . $e->getMessage());
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. Delete local temporary session folder
+                    Helpers::removeDir($uploadSessionDir);
+                }
+            }
+            Helpers::success([], 'Upload session cancelled and temporary chunks cleaned from Telegram storage.');
             break;
 
         // --- 5. Download & Streaming ---
