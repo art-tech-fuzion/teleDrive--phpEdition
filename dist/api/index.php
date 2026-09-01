@@ -602,6 +602,32 @@ try {
             Helpers::success($result, 'Item(s) deleted successfully.');
             break;
 
+        // --- 11. Bulk Delete ---
+
+        case 'items.bulk_delete':
+            Auth::requireAuth();
+            $rawIds = $_POST['ids'] ?? [];
+
+            if (is_string($rawIds)) {
+                $decoded = json_decode($rawIds, true);
+                $ids = is_array($decoded) ? $decoded : explode(',', $rawIds);
+            } elseif (is_array($rawIds)) {
+                $ids = $rawIds;
+            } else {
+                $ids = [];
+            }
+
+            $ids = array_filter(array_map('trim', $ids));
+
+            if (empty($ids)) {
+                Helpers::error('No item IDs provided for bulk deletion.');
+            }
+
+            $engine = new StorageEngine();
+            $result = $engine->deleteItems($ids);
+            Helpers::success($result, "Successfully deleted {$result['deleted_count']} item(s).");
+            break;
+
         default:
             Helpers::error("Unknown action: {$action}", 404);
             break;

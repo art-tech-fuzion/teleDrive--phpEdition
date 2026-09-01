@@ -1436,3 +1436,160 @@
     opacity: 1 !important;
   }
 }
+
+/* ==========================================================================
+   Bulk Selection Bar & Custom Checkbox Design
+   ========================================================================== */
+
+.td-bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-2) var(--spacing-6);
+  background: var(--bg-surface-elevated);
+  border-bottom: 1px solid var(--border-color);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  animation: tdFadeInDown 0.2s ease;
+  z-index: 20;
+}
+
+@keyframes tdFadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.td-bulk-left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+}
+
+.td-bulk-counter {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+}
+
+.td-bulk-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+}
+
+.td-btn-danger {
+  background: var(--color-danger);
+  color: #ffffff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 14px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background var(--transition-fast), transform var(--transition-fast);
+}
+
+.td-btn-danger:hover {
+  background: var(--color-danger-hover);
+  transform: translateY(-1px);
+}
+
+/* Custom Checkbox Design */
+.td-checkbox-wrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+  width: 18px;
+  height: 18px;
+}
+
+.td-custom-checkbox {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+}
+
+.td-custom-checkmark {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 18px;
+  width: 18px;
+  background-color: var(--bg-body);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-xs, 4px);
+  transition: all var(--transition-fast);
+}
+
+.td-checkbox-wrapper:hover .td-custom-checkmark {
+  border-color: var(--color-primary);
+}
+
+.td-custom-checkbox:checked ~ .td-custom-checkmark {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.td-custom-checkmark:after {
+  content: "";
+  position: absolute;
+  display: none;
+  left: 5.5px;
+  top: 2px;
+  width: 4px;
+  height: 8px;
+  border: solid #090d16;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.td-custom-checkbox:checked ~ .td-custom-checkmark:after {
+  display: block;
+}
+
+/* Grid Card Checkbox Positioning */
+.td-grid-card-select {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.td-grid-card:hover .td-grid-card-select,
+.td-grid-card.selected .td-grid-card-select {
+  opacity: 1;
+}
+
+.td-grid-card.selected {
+  background: var(--bg-surface-elevated);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1.5px var(--color-primary), 0 8px 24px var(--color-primary-glow);
+}
+
+/* List Table Row Checkbox & Selected State */
+.td-table-checkbox-cell {
+  width: 40px;
+  text-align: center;
+}
+
+.td-table-row.selected {
+  background: var(--color-primary-light) !important;
+}

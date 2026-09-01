@@ -17,7 +17,7 @@ window.TeleDrive = window.TeleDrive || {};
             toastContainer.id = 'td-toast-container';
             toastContainer.style.cssText = `
                 position: fixed;
-                top: 20px;
+                top: 55px;
                 right: 20px;
                 display: flex;
                 flex-direction: column;

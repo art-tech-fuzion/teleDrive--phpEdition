@@ -39,10 +39,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // State
+    // State
     const state = {
         currentFolderId: 'root',
         folderPath: [{ id: 'root', name: 'My Drive' }],
         items: [],
+        selectedIds: new Set(),
         viewMode: 'grid', // 'grid' | 'list'
         chunkSize: Math.floor(1.5 * 1024 * 1024) // 1.5MB Chunks (< 2M PHP upload_max_filesize limit)
     };
@@ -76,6 +78,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const sidebarCloseBtn = document.getElementById('td-sidebar-close');
     const sidebarBackdrop = document.getElementById('td-sidebar-backdrop');
     const sidebar = document.getElementById('td-sidebar');
+
+    // Bulk Actions Elements
+    const bulkBar = document.getElementById('td-bulk-bar');
+    const bulkCounter = document.getElementById('td-bulk-counter');
+    const selectAllCheckbox = document.getElementById('td-select-all');
+    const selectAllListCheckbox = document.getElementById('td-select-all-list');
+    const bulkDeleteBtn = document.getElementById('td-btn-bulk-delete');
+    const bulkClearBtn = document.getElementById('td-btn-bulk-clear');
 
     // Mobile Sidebar Drawer Handlers
     function openMobileSidebar() {
@@ -166,6 +176,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // 5. Load Folder Items with Skeleton Buffer
     async function loadFolder(folderId, search = '', forceRefresh = false) {
         state.currentFolderId = folderId;
+        state.selectedIds.clear();
+        updateBulkBarUI();
         
         // Show instant skeleton buffer to prevent empty flash
         renderSkeletonBuffer();
@@ -242,7 +254,48 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 7. Render Items (Grid & List)
+    // 7. Bulk Actions Bar UI Synchronizer
+    function updateBulkBarUI() {
+        const count = state.selectedIds.size;
+        const total = state.items.length;
+
+        if (bulkBar) {
+            bulkBar.style.display = count > 0 ? 'flex' : 'none';
+        }
+        if (bulkCounter) {
+            bulkCounter.textContent = `${count} selected`;
+        }
+
+        const isAllSelected = total > 0 && count === total;
+        const isIndeterminate = count > 0 && count < total;
+
+        if (selectAllCheckbox) {
+            selectAllCheckbox.checked = isAllSelected;
+            selectAllCheckbox.indeterminate = isIndeterminate;
+        }
+        if (selectAllListCheckbox) {
+            selectAllListCheckbox.checked = isAllSelected;
+            selectAllListCheckbox.indeterminate = isIndeterminate;
+        }
+
+        document.querySelectorAll('.td-grid-card').forEach(card => {
+            const id = card.dataset.itemId;
+            const isSelected = state.selectedIds.has(id);
+            card.classList.toggle('selected', isSelected);
+            const cb = card.querySelector('.td-item-checkbox');
+            if (cb) cb.checked = isSelected;
+        });
+
+        document.querySelectorAll('.td-table-row').forEach(row => {
+            const id = row.dataset.itemId;
+            const isSelected = state.selectedIds.has(id);
+            row.classList.toggle('selected', isSelected);
+            const cb = row.querySelector('.td-item-checkbox');
+            if (cb) cb.checked = isSelected;
+        });
+    }
+
+    // 8. Render Items (Grid & List)
     function renderItems() {
         itemCounter.textContent = `${state.items.length} item${state.items.length === 1 ? '' : 's'}`;
 
@@ -250,6 +303,7 @@ document.addEventListener('DOMContentLoaded', () => {
             emptyState.style.display = 'flex';
             gridView.style.display = 'none';
             listView.style.display = 'none';
+            updateBulkBarUI();
             return;
         }
 
@@ -265,12 +319,19 @@ document.addEventListener('DOMContentLoaded', () => {
         // Render Grid
         gridView.innerHTML = '';
         state.items.forEach(item => {
+            const isSelected = state.selectedIds.has(item.id);
             const card = document.createElement('div');
-            card.className = 'td-grid-card';
+            card.className = `td-grid-card ${isSelected ? 'selected' : ''}`;
             card.dataset.itemId = item.id;
             const iconData = getFileIcon(item);
 
             card.innerHTML = `
+                <div class="td-grid-card-select">
+                    <label class="td-checkbox-wrapper" title="Select item">
+                        <input type="checkbox" class="td-custom-checkbox td-item-checkbox" ${isSelected ? 'checked' : ''}>
+                        <span class="td-custom-checkmark"></span>
+                    </label>
+                </div>
                 <div class="td-grid-card-preview ${iconData.colorClass}">
                     <span class="td-grid-card-icon">${iconData.icon}</span>
                 </div>
@@ -289,9 +350,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             `;
 
+            const itemCheckbox = card.querySelector('.td-item-checkbox');
+            itemCheckbox.onchange = (e) => {
+                e.stopPropagation();
+                if (itemCheckbox.checked) {
+                    state.selectedIds.add(item.id);
+                } else {
+                    state.selectedIds.delete(item.id);
+                }
+                updateBulkBarUI();
+            };
+
             // Open Folder or Preview
             card.onclick = (e) => {
-                if (e.target.closest('.td-grid-card-actions')) return;
+                if (e.target.closest('.td-grid-card-actions') || e.target.closest('.td-grid-card-select')) return;
                 handleItemClick(item);
             };
 
@@ -323,12 +395,19 @@ document.addEventListener('DOMContentLoaded', () => {
         // Render List Table
         tableBody.innerHTML = '';
         state.items.forEach(item => {
+            const isSelected = state.selectedIds.has(item.id);
             const tr = document.createElement('tr');
-            tr.className = 'td-table-row';
+            tr.className = `td-table-row ${isSelected ? 'selected' : ''}`;
             tr.dataset.itemId = item.id;
             const iconData = getFileIcon(item);
 
             tr.innerHTML = `
+                <td class="td-table-checkbox-cell">
+                    <label class="td-checkbox-wrapper" title="Select item">
+                        <input type="checkbox" class="td-custom-checkbox td-item-checkbox" ${isSelected ? 'checked' : ''}>
+                        <span class="td-custom-checkmark"></span>
+                    </label>
+                </td>
                 <td>
                     <div class="td-table-name-cell">
                         <span class="td-file-icon">${iconData.icon}</span>
@@ -347,8 +426,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 </td>
             `;
 
+            const itemCheckbox = tr.querySelector('.td-item-checkbox');
+            itemCheckbox.onchange = (e) => {
+                e.stopPropagation();
+                if (itemCheckbox.checked) {
+                    state.selectedIds.add(item.id);
+                } else {
+                    state.selectedIds.delete(item.id);
+                }
+                updateBulkBarUI();
+            };
+
             tr.onclick = (e) => {
-                if (e.target.closest('.td-action-btn')) return;
+                if (e.target.closest('.td-action-btn') || e.target.closest('.td-table-checkbox-cell')) return;
                 handleItemClick(item);
             };
 
@@ -376,6 +466,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             tableBody.appendChild(tr);
         });
+
+        updateBulkBarUI();
     }
 
     // 8. Item Interaction: Open or Preview
@@ -719,6 +811,100 @@ document.addEventListener('DOMContentLoaded', () => {
                 toastCtrl.update(`Error deleting item: ${err.message || err}`, 'error', 4000);
             }
         }
+    }
+
+    // 12b. Bulk Delete Action Handler
+    async function handleBulkDelete() {
+        const count = state.selectedIds.size;
+        if (count === 0) return;
+
+        const confirmed = await TeleDrive.confirm({
+            title: 'Delete Selected Items',
+            message: `Are you sure you want to permanently delete ${count} selected item${count === 1 ? '' : 's'}? All contents inside selected folders will also be removed.`,
+            confirmText: `Delete (${count})`,
+            isDanger: true
+        });
+
+        if (!confirmed) return;
+
+        const idsToDelete = Array.from(state.selectedIds);
+        idsToDelete.forEach(id => {
+            document.querySelectorAll(`[data-item-id="${id}"]`).forEach(el => el.classList.add('td-item-deleting'));
+        });
+
+        const toastCtrl = TeleDrive.toast(`Deleting ${count} selected item(s)...`, 'loading', 0);
+        try {
+            const formData = new FormData();
+            formData.append('action', 'items.bulk_delete');
+            formData.append('_csrf', getCsrfToken());
+            formData.append('ids', JSON.stringify(idsToDelete));
+
+            const res = await apiFetch('api/index.php', { method: 'POST', body: formData });
+            const rawText = await res.text();
+            let data = null;
+            try {
+                data = JSON.parse(rawText);
+            } catch (jsonErr) {
+                throw new Error(rawText.replace(/<[^>]*>?/gm, '').trim() || 'Server returned invalid response');
+            }
+
+            if (data && data.success) {
+                idsToDelete.forEach(id => {
+                    document.querySelectorAll(`[data-item-id="${id}"]`).forEach(el => el.classList.add('td-item-leaving'));
+                });
+                setTimeout(() => {
+                    state.selectedIds.clear();
+                    state.items = state.items.filter(it => !idsToDelete.includes(it.id));
+                    renderItems();
+                }, 200);
+                toastCtrl.update(data.message || `Deleted ${count} item(s) successfully.`, 'success', 2500);
+            } else {
+                idsToDelete.forEach(id => {
+                    document.querySelectorAll(`[data-item-id="${id}"]`).forEach(el => el.classList.remove('td-item-deleting'));
+                });
+                toastCtrl.update((data && data.error) || 'Failed to delete selected items.', 'error', 4000);
+            }
+        } catch (err) {
+            console.error('Error during bulk deletion:', err);
+            idsToDelete.forEach(id => {
+                document.querySelectorAll(`[data-item-id="${id}"]`).forEach(el => el.classList.remove('td-item-deleting'));
+            });
+            toastCtrl.update(`Bulk delete error: ${err.message || err}`, 'error', 4000);
+        }
+    }
+
+    // Bulk Toolbar Event Listeners
+    if (selectAllCheckbox) {
+        selectAllCheckbox.onchange = () => {
+            if (selectAllCheckbox.checked) {
+                state.items.forEach(it => state.selectedIds.add(it.id));
+            } else {
+                state.selectedIds.clear();
+            }
+            updateBulkBarUI();
+        };
+    }
+
+    if (selectAllListCheckbox) {
+        selectAllListCheckbox.onchange = () => {
+            if (selectAllListCheckbox.checked) {
+                state.items.forEach(it => state.selectedIds.add(it.id));
+            } else {
+                state.selectedIds.clear();
+            }
+            updateBulkBarUI();
+        };
+    }
+
+    if (bulkClearBtn) {
+        bulkClearBtn.onclick = () => {
+            state.selectedIds.clear();
+            updateBulkBarUI();
+        };
+    }
+
+    if (bulkDeleteBtn) {
+        bulkDeleteBtn.onclick = handleBulkDelete;
     }
 
     // 13. Controlled Streaming Download with Progress Modal & Cancel

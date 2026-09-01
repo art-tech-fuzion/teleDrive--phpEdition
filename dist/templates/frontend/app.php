@@ -150,7 +150,30 @@ if (!defined('TELEDRIVE_INIT')) {
                 <div class="td-breadcrumbs" id="td-breadcrumbs">
                     <span class="td-breadcrumb-item active" data-id="root">My Drive</span>
                 </div>
-                <div class="td-item-counter" id="td-item-counter">0 items</div>
+                <div class="td-toolbar-right">
+                    <div class="td-item-counter" id="td-item-counter">0 items</div>
+                </div>
+            </div>
+
+            <!-- Bulk Selection Bar -->
+            <div class="td-bulk-bar" id="td-bulk-bar" style="display: none;">
+                <div class="td-bulk-left">
+                    <label class="td-checkbox-wrapper" title="Select All Items">
+                        <input type="checkbox" id="td-select-all" class="td-custom-checkbox">
+                        <span class="td-custom-checkmark"></span>
+                    </label>
+                    <span class="td-bulk-counter" id="td-bulk-counter">0 selected</span>
+                </div>
+                <div class="td-bulk-right">
+                    <button id="td-btn-bulk-delete" class="td-btn-sm td-btn-danger" title="Delete selected items">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                        Delete Selected
+                    </button>
+                    <button id="td-btn-bulk-clear" class="td-btn-icon-sm" title="Clear selection">✕</button>
+                </div>
             </div>
 
             <!-- Content Area (Grid & List Views) with Drag and Drop Overlay -->
@@ -182,6 +205,12 @@ if (!defined('TELEDRIVE_INIT')) {
                     <table class="td-table">
                         <thead>
                             <tr>
+                                <th style="width: 40px; text-align: center;">
+                                    <label class="td-checkbox-wrapper" title="Select All">
+                                        <input type="checkbox" id="td-select-all-list" class="td-custom-checkbox">
+                                        <span class="td-custom-checkmark"></span>
+                                    </label>
+                                </th>
                                 <th>Name</th>
                                 <th>Size</th>
                                 <th>Modified</th>

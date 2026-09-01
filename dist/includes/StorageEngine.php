@@ -166,15 +166,7 @@ class StorageEngine {
             }
         }
 
-        // 7. Cache protection: if scan returned empty but valid cache existed, retain cache
-        if (empty($items) && !$pinnedDocFileId && file_exists($cacheFile)) {
-            $oldCached = json_decode(@file_get_contents($cacheFile), true);
-            if (is_array($oldCached) && !empty($oldCached['items'])) {
-                return $oldCached;
-            }
-        }
-
-        // 8. Update local cache with latest data
+        // 7. Update local cache with latest data (supports clean resets)
         $indexData = [
             'items'            => array_values($items),
             'pinned_message_id'=> $pinnedMsgId,
@@ -424,6 +416,71 @@ class StorageEngine {
         }
 
         // Update local cache
+        $index['items'] = array_values($remainingItems);
+        $index['total_items'] = count($remainingItems);
+        @file_put_contents($this->getCachePath(), json_encode($index, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+        return [
+            'deleted_count' => $deletedCount,
+            'remaining_count' => count($remainingItems)
+        ];
+    }
+
+    /**
+     * Bulk delete multiple items (files and folders with cascade)
+     */
+    public function deleteItems(array $ids): array {
+        if (empty($ids)) {
+            return ['deleted_count' => 0, 'remaining_count' => 0];
+        }
+
+        $index = $this->getFileSystemIndex();
+        $items = $index['items'];
+
+        $toDelete = [];
+        foreach ($ids as $id) {
+            if (!empty($id)) {
+                $this->collectCascadeIds((string)$id, $items, $toDelete);
+            }
+        }
+
+        $deletedCount = 0;
+        $remainingItems = [];
+
+        foreach ($items as $item) {
+            if (isset($toDelete[$item['id']])) {
+                $deletedCount++;
+                // 1. Delete chunk messages from Storage Channel
+                if ($item['type'] === 'file' && !empty($item['chunks'])) {
+                    foreach ($item['chunks'] as $chunk) {
+                        if (isset($chunk['message_id'])) {
+                            try {
+                                $this->telegram->deleteMessage($this->storageChannel, (int)$chunk['message_id']);
+                            } catch (Exception $e) {
+                                error_log("Failed to delete storage message: " . $e->getMessage());
+                            }
+                        }
+                    }
+                }
+
+                // 2. Delete individual metadata message from Index Channel (with tombstone fallback)
+                if (isset($item['index_message_id']) && $item['index_message_id'] > 0) {
+                    $deleted = $this->telegram->deleteMessage($this->indexChannel, (int)$item['index_message_id']);
+                    if (!$deleted) {
+                        try {
+                            $tombstone = json_encode(['id' => $item['id'], 'deleted' => true]);
+                            $this->telegram->editMessageText($this->indexChannel, (int)$item['index_message_id'], "<code>" . htmlspecialchars($tombstone) . "</code>");
+                        } catch (Exception $e) {
+                            error_log("Failed to tombstone index message: " . $e->getMessage());
+                        }
+                    }
+                }
+            } else {
+                $remainingItems[] = $item;
+            }
+        }
+
+        // Update local cache atomically
         $index['items'] = array_values($remainingItems);
         $index['total_items'] = count($remainingItems);
         @file_put_contents($this->getCachePath(), json_encode($index, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
