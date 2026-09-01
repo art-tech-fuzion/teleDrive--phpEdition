@@ -2,11 +2,20 @@
 /**
  * Zero-Database Storage & Metadata Checkpointing Engine
  * 
- * Implements the core architecture:
- * 1. Metadata storage as JSON messages in Index Channel
- * 2. 50-Message Compaction / Checkpointing with pinned master_manifest.json
- * 3. Fast sub-second index loading
- * 4. Cascade folder deletion & in-place updates
+ * Complete Lifecycle Architecture:
+ * 1. Auto-Bootstrap: Empty/reset Index Channel automatically initializes and PINs an empty master_manifest.json.
+ * 2. Delta Streaming: New file/folder creation logs single JSON messages below the pinned document.
+ * 3. Queue-Aware 50-Message Compaction: At the 50th delta message, consolidates metadata, uploads and PINs
+ *    a new master_manifest.json, unpins the old document, and flags pending purge so ongoing upload queues
+ *    are NEVER blocked or delayed.
+ * 4. Post-Upload Batch Purge: When upload queue completes, batch-deletes all old messages and unpinned documents
+ *    above the new pin concurrently using multi-cURL.
+ * 5. Pinned Document Sync:
+ *    - Renames/Moves on items in pinned manifest append delta updates that replace old records on next compaction.
+ *    - Deletions on items in pinned manifest post {"id": "...", "deleted": true} tombstones so they are immediately
+ *      filtered out and permanently dropped on next compaction.
+ *    - If all items in Drive are deleted, pinned manifest is reset to an empty state.
+ * 6. Instant Caching: Local cache provides sub-millisecond dashboard loads and auto-syncs with Telegram.
  */
 
 if (!defined('TELEDRIVE_INIT')) {
@@ -60,10 +69,10 @@ class StorageEngine {
 
         $cacheFile = $this->getCachePath();
 
-        // 1. Check local cache first only if it has valid items and forceRemote is not requested
+        // 1. Check local cache first only if forceRemote is not requested
         if (!$forceRemote && file_exists($cacheFile)) {
             $cached = json_decode(@file_get_contents($cacheFile), true);
-            if (is_array($cached) && !empty($cached['items'])) {
+            if (is_array($cached) && isset($cached['items'])) {
                 return $cached;
             }
         }
@@ -117,19 +126,25 @@ class StorageEngine {
             error_log("Top watermark detection note: " . $e->getMessage());
         }
 
-        // Determine scan range:
-        // - If pinned manifest exists: scan strictly from ($pinnedMsgId + 1) to $endMsgId
-        // - If no pinned manifest exists (under 50 items): scan from startBound (1) up to $endMsgId (capped at 50 messages)
-        if ($topMsgId > 0) {
+        // If no pinned manifest exists at all (fresh bootstrap or channel reset)
+        if ($pinnedMsgId === 0 && empty($items)) {
+            // Auto-Bootstrap: create and PIN an initial clean master_manifest.json
+            $bootstrapPinnedId = $this->rebuildAndPinManifest([]);
+            $pinnedMsgId = $bootstrapPinnedId;
+            $items = [];
+            $deltaCount = 0;
+        }
+
+        // 5. Determine scan range for delta messages (strictly below the pinned document)
+        if ($topMsgId > 0 && $pinnedMsgId > 0) {
+            $startMsgId = $pinnedMsgId + 1;
             $endMsgId   = $topMsgId - 1;
-            $startBound = ($pinnedMsgId > 0) ? ($pinnedMsgId + 1) : 1;
-            $startMsgId = max($startBound, $endMsgId - self::COMPACTION_THRESHOLD);
         } else {
             $startMsgId = 1;
             $endMsgId   = 0;
         }
 
-        // 5. Scan recent delta messages concurrently using high-speed multi-cURL (self-forwarding in Index Channel)
+        // Scan delta messages concurrently using high-speed multi-cURL
         if ($startMsgId <= $endMsgId) {
             $scanIds = range($startMsgId, $endMsgId);
             $rawMessages = $this->telegram->fetchMessagesBatch($this->indexChannel, $this->indexChannel, $scanIds);
@@ -140,9 +155,18 @@ class StorageEngine {
                 $parsed = json_decode($cleanJson, true);
 
                 if (is_array($parsed)) {
-                    // Skip deleted / tombstone items
+                    // Skip batched tombstones
+                    if (!empty($parsed['tombstones']) && is_array($parsed['tombstones'])) {
+                        foreach ($parsed['tombstones'] as $tId) {
+                            unset($items[$tId]);
+                        }
+                        $deltaCount++;
+                        continue;
+                    }
+                    // Skip individual deleted / tombstone items
                     if (!empty($parsed['deleted']) && !empty($parsed['id'])) {
                         unset($items[$parsed['id']]);
+                        $deltaCount++;
                         continue;
                     }
                     if (isset($parsed['id'], $parsed['type'])) {
@@ -154,19 +178,27 @@ class StorageEngine {
             }
         }
 
-        // 6. If delta messages touch 50, merge, upload new document, PIN it, and UNPIN the old document
+        $pendingPurge = null;
+
+        // 6. If delta messages touch 50, merge, upload new document, PIN it, and schedule non-blocking purge
         if ($deltaCount >= self::COMPACTION_THRESHOLD) {
             $newPinnedId = $this->rebuildAndPinManifest($items);
             if ($newPinnedId > 0) {
+                // Unpin old pinned manifest
                 if ($pinnedMsgId > 0 && $pinnedMsgId !== $newPinnedId) {
                     $this->telegram->unpinChatMessage($this->indexChannel, $pinnedMsgId);
+                    $pendingPurge = [
+                        'old_pin' => $pinnedMsgId,
+                        'from'    => $pinnedMsgId + 1,
+                        'to'      => $newPinnedId - 1
+                    ];
                 }
                 $pinnedMsgId = $newPinnedId;
                 $deltaCount = 0;
             }
         }
 
-        // 7. Update local cache with latest data (supports clean resets)
+        // 7. Update local cache with latest data
         $indexData = [
             'items'            => array_values($items),
             'pinned_message_id'=> $pinnedMsgId,
@@ -174,6 +206,10 @@ class StorageEngine {
             'total_items'      => count($items),
             'last_synced_at'   => time()
         ];
+
+        if ($pendingPurge !== null) {
+            $indexData['pending_purge'] = $pendingPurge;
+        }
 
         @file_put_contents($cacheFile, json_encode($indexData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
@@ -220,12 +256,12 @@ class StorageEngine {
     }
 
     /**
-     * Post a single metadata JSON message to Index Channel & trigger 50-message compaction
+     * Post a single metadata JSON message to Index Channel & trigger 50-message compaction without blocking uploads
      */
     private function saveMetadataEntry(array $metadata): array {
         $jsonPayload = json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         
-        // 1. Post individual JSON message to Telegram Index Channel
+        // 1. Post individual JSON message to Telegram Index Channel (lands below pinned document)
         $tgResponse = $this->telegram->sendMessage($this->indexChannel, "<code>" . htmlspecialchars($jsonPayload) . "</code>");
         $messageId = (int)$tgResponse['message_id'];
         $metadata['index_message_id'] = $messageId;
@@ -235,6 +271,7 @@ class StorageEngine {
         $items = $index['items'];
         $deltaCount = (int)($index['delta_count'] ?? 0) + 1;
         $pinnedMsgId = (int)($index['pinned_message_id'] ?? 0);
+        $needsPurge = false;
 
         // Merge / Upsert item
         $found = false;
@@ -249,27 +286,72 @@ class StorageEngine {
             $items[] = $metadata;
         }
 
-        // 3. Check 50-Message Compaction Threshold
-        // Strictly only compact when reaching the 50th delta message
+        // 3. Check 50-Message Compaction Threshold (Non-Blocking)
         if ($deltaCount >= self::COMPACTION_THRESHOLD) {
-            // Merge all items, upload master_manifest.json document and PIN it
             $newPinnedId = $this->rebuildAndPinManifest($items);
             if ($newPinnedId > 0) {
+                // Unpin old pinned manifest and record purge range for post-queue execution
                 if ($pinnedMsgId > 0 && $pinnedMsgId !== $newPinnedId) {
                     $this->telegram->unpinChatMessage($this->indexChannel, $pinnedMsgId);
+                    $index['pending_purge'] = [
+                        'old_pin' => $pinnedMsgId,
+                        'from'    => $pinnedMsgId + 1,
+                        'to'      => $newPinnedId - 1
+                    ];
                 }
-                $index['pinned_message_id'] = $newPinnedId;
-                $deltaCount = 0; // Reset delta counter after 50-message checkpoint
+                $pinnedMsgId = $newPinnedId;
+                $deltaCount = 0; // Reset delta counter after compaction
+                $needsPurge = true;
             }
         }
 
         // Save updated cache
         $index['items'] = array_values($items);
+        $index['pinned_message_id'] = $pinnedMsgId;
         $index['delta_count'] = $deltaCount;
         $index['total_items'] = count($items);
         @file_put_contents($this->getCachePath(), json_encode($index, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
+        $metadata['needs_purge'] = $needsPurge;
         return $metadata;
+    }
+
+    /**
+     * Batch purge old index messages and old unpinned documents after upload queue finishes
+     */
+    public function purgePendingIndexMessages(): array {
+        $index = $this->getFileSystemIndex();
+        $pending = $index['pending_purge'] ?? null;
+
+        if (!$pending) {
+            return ['purged' => false, 'count' => 0];
+        }
+
+        $purgedCount = 0;
+
+        // 1. Delete old unpinned manifest document
+        if (!empty($pending['old_pin']) && $pending['old_pin'] > 0) {
+            $this->telegram->deleteMessage($this->indexChannel, (int)$pending['old_pin']);
+            $purgedCount++;
+        }
+
+        // 2. Batch delete all delta messages in range concurrently using multi-cURL
+        $from = (int)($pending['from'] ?? 0);
+        $to   = (int)($pending['to'] ?? 0);
+        if ($from > 0 && $to >= $from) {
+            $ids = range($from, $to);
+            $deleted = $this->telegram->deleteMessagesBatch($this->indexChannel, $ids);
+            $purgedCount += $deleted;
+        }
+
+        // 3. Clear pending_purge flag from local cache
+        unset($index['pending_purge']);
+        @file_put_contents($this->getCachePath(), json_encode($index, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+        return [
+            'purged' => true,
+            'count'  => $purgedCount
+        ];
     }
 
     /**
@@ -280,6 +362,7 @@ class StorageEngine {
         $items = $index['items'];
         $target = null;
         $newName = Helpers::sanitizeFilename($newName);
+        $pinnedMsgId = (int)($index['pinned_message_id'] ?? 0);
 
         foreach ($items as &$item) {
             if ($item['id'] === $id) {
@@ -294,17 +377,23 @@ class StorageEngine {
             throw new Exception("Item with ID {$id} not found.");
         }
 
-        // In-place edit of the individual index message in Telegram Index Channel
-        if (isset($target['index_message_id']) && $target['index_message_id'] > 0) {
+        // If item's message is in current delta range (> pinnedMsgId), edit it in-place
+        $msgId = (int)($target['index_message_id'] ?? 0);
+        if ($msgId > $pinnedMsgId) {
             try {
                 $jsonPayload = json_encode($target, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                $this->telegram->editMessageText($this->indexChannel, (int)$target['index_message_id'], "<code>" . htmlspecialchars($jsonPayload) . "</code>");
+                $this->telegram->editMessageText($this->indexChannel, $msgId, "<code>" . htmlspecialchars($jsonPayload) . "</code>");
             } catch (Exception $e) {
                 error_log("Failed to edit message text in place: " . $e->getMessage());
             }
+        } else {
+            // Otherwise write an update message in the delta stream (replaces old record on next compaction)
+            $jsonPayload = json_encode($target, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            $tgResponse = $this->telegram->sendMessage($this->indexChannel, "<code>" . htmlspecialchars($jsonPayload) . "</code>");
+            $target['index_message_id'] = (int)($tgResponse['message_id'] ?? 0);
         }
 
-        // Update local cache without re-uploading manifest document for single renames
+        // Update local cache
         $index['items'] = array_values($items);
         @file_put_contents($this->getCachePath(), json_encode($index, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
@@ -319,13 +408,12 @@ class StorageEngine {
         $items = $index['items'];
         $target = null;
         $destParentId = empty($destinationParentId) ? 'root' : $destinationParentId;
+        $pinnedMsgId = (int)($index['pinned_message_id'] ?? 0);
 
-        // Prevent moving an item into itself
         if ($id === $destParentId) {
             throw new Exception("Cannot move an item inside itself.");
         }
 
-        // If destination is not root, ensure destination folder exists
         if ($destParentId !== 'root') {
             $destExists = false;
             foreach ($items as $item) {
@@ -352,14 +440,18 @@ class StorageEngine {
             throw new Exception("Item with ID {$id} not found.");
         }
 
-        // In-place edit of the individual index message in Telegram Index Channel
-        if (isset($target['index_message_id']) && $target['index_message_id'] > 0) {
+        $msgId = (int)($target['index_message_id'] ?? 0);
+        if ($msgId > $pinnedMsgId) {
             try {
                 $jsonPayload = json_encode($target, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                $this->telegram->editMessageText($this->indexChannel, (int)$target['index_message_id'], "<code>" . htmlspecialchars($jsonPayload) . "</code>");
+                $this->telegram->editMessageText($this->indexChannel, $msgId, "<code>" . htmlspecialchars($jsonPayload) . "</code>");
             } catch (Exception $e) {
                 error_log("Failed to edit message text for moveItem: " . $e->getMessage());
             }
+        } else {
+            $jsonPayload = json_encode($target, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            $tgResponse = $this->telegram->sendMessage($this->indexChannel, "<code>" . htmlspecialchars($jsonPayload) . "</code>");
+            $target['index_message_id'] = (int)($tgResponse['message_id'] ?? 0);
         }
 
         // Update local cache
@@ -373,61 +465,11 @@ class StorageEngine {
      * Delete an item (File or Folder with recursive cascade)
      */
     public function deleteItem(string $id): array {
-        $index = $this->getFileSystemIndex();
-        $items = $index['items'];
-
-        $toDelete = [];
-        $this->collectCascadeIds($id, $items, $toDelete);
-
-        $deletedCount = 0;
-        $remainingItems = [];
-
-        foreach ($items as $item) {
-            if (isset($toDelete[$item['id']])) {
-                $deletedCount++;
-                // 1. Delete chunk messages from Storage Channel (safely caught)
-                if ($item['type'] === 'file' && !empty($item['chunks'])) {
-                    foreach ($item['chunks'] as $chunk) {
-                        if (isset($chunk['message_id'])) {
-                            try {
-                                $this->telegram->deleteMessage($this->storageChannel, (int)$chunk['message_id']);
-                            } catch (Exception $e) {
-                                error_log("Failed to delete storage message: " . $e->getMessage());
-                            }
-                        }
-                    }
-                }
-
-                // 2. Delete individual metadata message from Index Channel (with tombstone fallback)
-                if (isset($item['index_message_id']) && $item['index_message_id'] > 0) {
-                    $deleted = $this->telegram->deleteMessage($this->indexChannel, (int)$item['index_message_id']);
-                    if (!$deleted) {
-                        try {
-                            $tombstone = json_encode(['id' => $item['id'], 'deleted' => true]);
-                            $this->telegram->editMessageText($this->indexChannel, (int)$item['index_message_id'], "<code>" . htmlspecialchars($tombstone) . "</code>");
-                        } catch (Exception $e) {
-                            error_log("Failed to tombstone index message: " . $e->getMessage());
-                        }
-                    }
-                }
-            } else {
-                $remainingItems[] = $item;
-            }
-        }
-
-        // Update local cache
-        $index['items'] = array_values($remainingItems);
-        $index['total_items'] = count($remainingItems);
-        @file_put_contents($this->getCachePath(), json_encode($index, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-
-        return [
-            'deleted_count' => $deletedCount,
-            'remaining_count' => count($remainingItems)
-        ];
+        return $this->deleteItems([$id]);
     }
 
     /**
-     * Bulk delete multiple items (files and folders with cascade)
+     * Bulk delete multiple items (files and folders with cascade) with high-speed multi-cURL batching
      */
     public function deleteItems(array $ids): array {
         if (empty($ids)) {
@@ -436,6 +478,7 @@ class StorageEngine {
 
         $index = $this->getFileSystemIndex();
         $items = $index['items'];
+        $pinnedMsgId = (int)($index['pinned_message_id'] ?? 0);
 
         $toDelete = [];
         foreach ($ids as $id) {
@@ -446,41 +489,75 @@ class StorageEngine {
 
         $deletedCount = 0;
         $remainingItems = [];
+        $storageChunkMsgIds = [];
+        $deltaIndexMsgIds = [];
+        $tombstoneItemIds = [];
 
         foreach ($items as $item) {
             if (isset($toDelete[$item['id']])) {
                 $deletedCount++;
-                // 1. Delete chunk messages from Storage Channel
+                // 1. Collect chunk message IDs from Storage Channel for parallel batch delete
                 if ($item['type'] === 'file' && !empty($item['chunks'])) {
                     foreach ($item['chunks'] as $chunk) {
-                        if (isset($chunk['message_id'])) {
-                            try {
-                                $this->telegram->deleteMessage($this->storageChannel, (int)$chunk['message_id']);
-                            } catch (Exception $e) {
-                                error_log("Failed to delete storage message: " . $e->getMessage());
-                            }
+                        if (!empty($chunk['message_id'])) {
+                            $storageChunkMsgIds[] = (int)$chunk['message_id'];
                         }
                     }
                 }
 
-                // 2. Delete individual metadata message from Index Channel (with tombstone fallback)
-                if (isset($item['index_message_id']) && $item['index_message_id'] > 0) {
-                    $deleted = $this->telegram->deleteMessage($this->indexChannel, (int)$item['index_message_id']);
-                    if (!$deleted) {
-                        try {
-                            $tombstone = json_encode(['id' => $item['id'], 'deleted' => true]);
-                            $this->telegram->editMessageText($this->indexChannel, (int)$item['index_message_id'], "<code>" . htmlspecialchars($tombstone) . "</code>");
-                        } catch (Exception $e) {
-                            error_log("Failed to tombstone index message: " . $e->getMessage());
-                        }
-                    }
+                // 2. Classify Index Channel deletion vs tombstone
+                $msgId = (int)($item['index_message_id'] ?? 0);
+                if ($msgId > $pinnedMsgId) {
+                    // Message is in current delta stream -> queue for parallel batch deletion
+                    $deltaIndexMsgIds[] = $msgId;
+                } else {
+                    // Item was in older pinned manifest -> queue for tombstoning
+                    $tombstoneItemIds[] = $item['id'];
                 }
             } else {
                 $remainingItems[] = $item;
             }
         }
 
-        // Update local cache atomically
+        // 3. Batch delete all storage chunk messages concurrently (ultra fast, non-blocking)
+        if (!empty($storageChunkMsgIds)) {
+            try {
+                $this->telegram->deleteMessagesBatch($this->storageChannel, array_unique($storageChunkMsgIds));
+            } catch (Exception $e) {
+                error_log("Failed to batch delete storage chunks: " . $e->getMessage());
+            }
+        }
+
+        // 4. Batch delete all delta index messages concurrently
+        if (!empty($deltaIndexMsgIds)) {
+            try {
+                $this->telegram->deleteMessagesBatch($this->indexChannel, array_unique($deltaIndexMsgIds));
+            } catch (Exception $e) {
+                error_log("Failed to batch delete delta index messages: " . $e->getMessage());
+            }
+        }
+
+        // 5. Handle channel state
+        if (empty($remainingItems)) {
+            // If ALL items in the Drive are deleted, cleanly reset the pinned document to an empty manifest
+            if ($pinnedMsgId > 0) {
+                $this->telegram->unpinChatMessage($this->indexChannel, $pinnedMsgId);
+                $this->telegram->deleteMessage($this->indexChannel, $pinnedMsgId);
+            }
+            $newPinnedId = $this->rebuildAndPinManifest([]);
+            $index['pinned_message_id'] = $newPinnedId;
+            $index['delta_count'] = 0;
+        } elseif (!empty($tombstoneItemIds)) {
+            // Post ONE single batched tombstone message into the index channel instead of N separate calls
+            try {
+                $tombstonePayload = json_encode(['tombstones' => array_values($tombstoneItemIds)]);
+                $this->telegram->sendMessage($this->indexChannel, "<code>" . htmlspecialchars($tombstonePayload) . "</code>");
+            } catch (Exception $e) {
+                error_log("Failed to post batched tombstone message: " . $e->getMessage());
+            }
+        }
+
+        // 6. Update local cache atomically
         $index['items'] = array_values($remainingItems);
         $index['total_items'] = count($remainingItems);
         @file_put_contents($this->getCachePath(), json_encode($index, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));

@@ -37,7 +37,7 @@ class TelegramClient {
 
         $url = $this->apiUrl . $method;
         
-        if (!$this->ch || !is_resource($this->ch)) {
+        if (!$this->ch || (PHP_VERSION_ID < 80000 ? !is_resource($this->ch) : !($this->ch instanceof \CurlHandle))) {
             $this->ch = curl_init();
             curl_setopt($this->ch, CURLOPT_RETURNTRANSFER, true);
             curl_setopt($this->ch, CURLOPT_SSL_VERIFYPEER, true);
@@ -231,6 +231,61 @@ class TelegramClient {
             error_log("Delete message error ($chatId / $messageId): " . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * Batch delete multiple messages concurrently using curl_multi for ultra-fast purging
+     */
+    public function deleteMessagesBatch(string|int $chatId, array $messageIds): int {
+        if (empty($messageIds) || empty($this->botToken)) {
+            return 0;
+        }
+
+        $url = $this->apiUrl . 'deleteMessage';
+        $chunks = array_chunk($messageIds, 15);
+        $deletedCount = 0;
+
+        foreach ($chunks as $chunk) {
+            $mh = curl_multi_init();
+            $handles = [];
+
+            foreach ($chunk as $msgId) {
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, $url);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+                curl_setopt($ch, CURLOPT_POST, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, [
+                    'chat_id'    => $chatId,
+                    'message_id' => (int)$msgId
+                ]);
+                curl_multi_add_handle($mh, $ch);
+                $handles[] = $ch;
+            }
+
+            $running = null;
+            do {
+                curl_multi_exec($mh, $running);
+                curl_multi_select($mh, 0.05);
+            } while ($running > 0);
+
+            foreach ($handles as $ch) {
+                $res = curl_multi_getcontent($ch);
+                $data = json_decode($res, true);
+                if (!empty($data['ok'])) {
+                    $deletedCount++;
+                }
+                curl_multi_remove_handle($mh, $ch);
+                if (PHP_VERSION_ID < 80000) {
+                    curl_close($ch);
+                }
+            }
+            curl_multi_close($mh);
+        }
+
+        return $deletedCount;
     }
 
     /**

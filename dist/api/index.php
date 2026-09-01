@@ -463,7 +463,10 @@ try {
                 'chunks'    => $finalChunks,
             ]);
 
-            Helpers::success(['item' => $newEntry], 'File uploaded and indexed successfully.');
+            Helpers::success([
+                'item'        => $newEntry,
+                'needs_purge' => !empty($newEntry['needs_purge'])
+            ], 'File uploaded and indexed successfully.');
             break;
 
         // --- 5. Download & Streaming ---
@@ -540,7 +543,10 @@ try {
 
             $engine = new StorageEngine();
             $folder = $engine->createFolder($name, $parentId);
-            Helpers::success(['folder' => $folder], 'Folder created successfully.');
+            Helpers::success([
+                'folder'      => $folder,
+                'needs_purge' => !empty($folder['needs_purge'])
+            ], 'Folder created successfully.');
             break;
 
         // --- 7. Rename ---
@@ -626,6 +632,15 @@ try {
             $engine = new StorageEngine();
             $result = $engine->deleteItems($ids);
             Helpers::success($result, "Successfully deleted {$result['deleted_count']} item(s).");
+            break;
+
+        // --- 12. Purge Old Index Messages ---
+
+        case 'system.purge_index_messages':
+            Auth::requireAuth();
+            $engine = new StorageEngine();
+            $result = $engine->purgePendingIndexMessages();
+            Helpers::success($result, 'Index messages purged successfully.');
             break;
 
         default:

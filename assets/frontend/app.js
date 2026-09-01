@@ -45,6 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
         folderPath: [{ id: 'root', name: 'My Drive' }],
         items: [],
         selectedIds: new Set(),
+        needsIndexPurge: false,
         viewMode: 'grid', // 'grid' | 'list'
         chunkSize: Math.floor(1.5 * 1024 * 1024) // 1.5MB Chunks (< 2M PHP upload_max_filesize limit)
     };
@@ -561,6 +562,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.items.unshift(data.folder);
                 renderItems();
                 toastCtrl.update(`Folder "${data.folder.name}" created successfully.`, 'success', 2500);
+
+                if (data.needs_purge) {
+                    state.needsIndexPurge = true;
+                    triggerIndexPurge();
+                }
             } else {
                 toastCtrl.update(data.error || 'Failed to create folder.', 'error', 4000);
             }
@@ -1098,6 +1104,60 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 2000);
 
         await loadFolder(state.currentFolderId);
+
+        // If 50-message compaction triggered during queue, run non-blocking index purge
+        if (state.needsIndexPurge) {
+            await triggerIndexPurge();
+        }
+    }
+
+    async function triggerIndexPurge() {
+        state.needsIndexPurge = false;
+
+        // Temporarily disable actions to prevent race conditions during purge
+        if (uploadTrigger) {
+            uploadTrigger.disabled = true;
+            uploadTrigger.style.opacity = '0.5';
+            uploadTrigger.style.pointerEvents = 'none';
+        }
+        if (newFolderBtn) {
+            newFolderBtn.disabled = true;
+            newFolderBtn.style.opacity = '0.5';
+            newFolderBtn.style.pointerEvents = 'none';
+        }
+
+        const toastCtrl = TeleDrive.toast('Please wait while clearing junk files...', 'loading', 0);
+
+        try {
+            const formData = new FormData();
+            formData.append('action', 'system.purge_index_messages');
+            formData.append('_csrf', getCsrfToken());
+
+            const res = await apiFetch('api/index.php', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await res.json();
+            if (data && data.success && data.purged) {
+                toastCtrl.update('Clearing junk files success! You can now upload or create folders.', 'success', 3500);
+            } else {
+                toastCtrl.update('Clearing junk files success!', 'success', 2000);
+            }
+        } catch (err) {
+            console.error('Error purging index junk messages:', err);
+            toastCtrl.update('Index optimization finished.', 'info', 2000);
+        } finally {
+            if (uploadTrigger) {
+                uploadTrigger.disabled = false;
+                uploadTrigger.style.opacity = '';
+                uploadTrigger.style.pointerEvents = '';
+            }
+            if (newFolderBtn) {
+                newFolderBtn.disabled = false;
+                newFolderBtn.style.opacity = '';
+                newFolderBtn.style.pointerEvents = '';
+            }
+        }
     }
 
     async function uploadSingleFile(file) {
@@ -1282,6 +1342,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const completeResult = await completeRes.json();
 
             if (completeResult.success) {
+                if (completeResult.needs_purge || (completeResult.data && completeResult.data.needs_purge)) {
+                    state.needsIndexPurge = true;
+                }
+
                 fillBar.style.width = '100%';
                 percentLabel.textContent = '100%';
                 sizeLabel.textContent = `${formatBytes(file.size)} / ${formatBytes(file.size)}`;
