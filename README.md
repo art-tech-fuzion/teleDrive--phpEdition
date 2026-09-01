@@ -107,7 +107,7 @@ There are multiple easy ways to get your Channel IDs:
 
 ---
 
-## 🚀 How to Run TeleDrive
+## 🚀 How to Run TeleDrives
 
 ### Option 1: Run Locally (Built-in PHP Server)
 You can run TeleDrive locally with PHP 8.x:
