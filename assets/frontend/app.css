@@ -827,29 +827,124 @@
 }
 
 .td-queue-item-meta {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   font-size: 11px;
   color: var(--text-muted);
+  margin-top: 4px;
 }
 
 .td-queue-percent {
   color: var(--color-primary);
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-bold);
+  font-size: 11px;
+  background: var(--color-primary-subtle, rgba(0, 212, 255, 0.12));
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
   font-feature-settings: "tnum";
 }
 
 .td-queue-size {
   color: var(--text-secondary);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-feature-settings: "tnum";
 }
 
-.td-queue-status {
+.td-queue-speed {
   font-size: 10px;
+  color: var(--text-muted);
+  text-align: right;
+  white-space: nowrap;
+  font-feature-settings: "tnum";
+}
+
+/* Download Progress Modal */
+.td-download-modal-box {
+  background: var(--bg-surface-elevated, #161e2e);
+  border: 1px solid var(--border-color);
+  padding: 24px;
+  border-radius: var(--radius-lg, 12px);
+  width: 90%;
+  max-width: 440px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.td-download-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.td-download-modal-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.td-download-modal-title {
+  font-size: var(--font-size-md, 15px);
+  font-weight: var(--font-weight-semibold, 600);
+  color: var(--text-main);
+  margin: 0;
+}
+
+.td-download-modal-filename {
+  font-size: var(--font-size-xs, 12px);
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.td-download-progress-bar {
+  height: 8px;
+  background: var(--bg-surface);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.td-download-progress-fill {
+  height: 100%;
+  background: var(--color-accent-gradient);
+  width: 0%;
+  transition: width 0.15s ease;
+  box-shadow: 0 0 10px var(--color-primary-glow);
+}
+
+.td-download-modal-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.td-download-modal-percent {
+  color: var(--color-primary);
+  font-weight: var(--font-weight-bold);
+  background: var(--color-primary-subtle, rgba(0, 212, 255, 0.12));
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-feature-settings: "tnum";
+}
+
+.td-download-modal-size {
+  color: var(--text-secondary);
+  font-feature-settings: "tnum";
+}
+
+.td-download-modal-speed {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-feature-settings: "tnum";
 }
 
 /* Preview Modal */
@@ -945,8 +1040,11 @@
   border-radius: var(--radius-sm);
   text-decoration: none;
   cursor: pointer;
-  color: white;
   border: solid 1px #ffffff1a;
+}
+
+#td-preview-download {
+  color: white;
 }
 
 .td-btn-icon-sm {
@@ -1187,16 +1285,17 @@
   }
 
   .td-grid-view {
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--spacing-3);
   }
 
   .td-grid-card {
     padding: var(--spacing-3);
+    max-width: 100%;
   }
 
   .td-grid-card-preview {
-    height: 85px;
+    height: 90px;
     margin-bottom: var(--spacing-2);
   }
 
@@ -1271,7 +1370,6 @@
   }
 
   .td-grid-view {
-    grid-template-columns: repeat(2, 1fr);
     gap: var(--spacing-2);
   }
 

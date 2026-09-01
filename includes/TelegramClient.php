@@ -254,6 +254,90 @@ class TelegramClient {
     }
 
     /**
+     * Upload multiple documents to a Telegram channel concurrently using curl_multi
+     *
+     * @param string|int $chatId Target channel ID
+     * @param array $documents List of items: [ ['path' => ..., 'filename' => ..., 'caption' => ...], ... ]
+     * @return array List of uploaded document metadata in matching order
+     */
+    public function sendDocumentsBatch(string|int $chatId, array $documents): array {
+        if (empty($documents) || empty($this->botToken)) {
+            return [];
+        }
+
+        $docUrl = $this->apiUrl . 'sendDocument';
+        $results = [];
+
+        // Upload in concurrent windows of 3 to maximize throughput and respect rate limits
+        $windows = array_chunk($documents, 3, true);
+
+        foreach ($windows as $window) {
+            $mh = curl_multi_init();
+            $handles = [];
+
+            foreach ($window as $idx => $doc) {
+                if (!file_exists($doc['path'])) {
+                    continue;
+                }
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, $docUrl);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 180);
+                curl_setopt($ch, CURLOPT_POST, true);
+
+                $cFile = new CURLFile($doc['path'], mime_content_type($doc['path']) ?: 'application/octet-stream', $doc['filename']);
+                $params = [
+                    'chat_id'  => $chatId,
+                    'document' => $cFile,
+                ];
+                if (!empty($doc['caption'])) {
+                    $params['caption'] = $doc['caption'];
+                }
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
+
+                curl_multi_add_handle($mh, $ch);
+                $handles[$idx] = $ch;
+            }
+
+            $running = null;
+            do {
+                curl_multi_exec($mh, $running);
+                curl_multi_select($mh, 0.1);
+            } while ($running > 0);
+
+            foreach ($handles as $idx => $ch) {
+                $content = curl_multi_getcontent($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_multi_remove_handle($mh, $ch);
+                if (PHP_VERSION_ID < 80000) {
+                    curl_close($ch);
+                }
+
+                $data = json_decode($content, true);
+                if (!empty($data['ok']) && isset($data['result']['document'])) {
+                    $docInfo = $data['result']['document'];
+                    $results[$idx] = [
+                        'message_id'     => (int)$data['result']['message_id'],
+                        'file_id'        => $docInfo['file_id'],
+                        'file_unique_id' => $docInfo['file_unique_id'] ?? '',
+                        'file_name'      => $docInfo['file_name'] ?? $documents[$idx]['filename'],
+                        'file_size'      => $docInfo['file_size'] ?? filesize($documents[$idx]['path']),
+                    ];
+                } else {
+                    $desc = $data['description'] ?? ("HTTP " . $httpCode);
+                    throw new Exception("Batch Telegram upload error: {$desc}");
+                }
+            }
+            curl_multi_close($mh);
+        }
+
+        ksort($results);
+        return $results;
+    }
+
+    /**
      * Pin a message in a channel
      */
     public function pinChatMessage(string|int $chatId, int $messageId, bool $disableNotification = true): bool {
@@ -340,26 +424,46 @@ class TelegramClient {
     /**
      * Stream binary content directly to client output (for proxying chunk downloads)
      */
-    public function streamFileToOutput(string $fileId): void {
-        $url = $this->getFileDownloadUrl($fileId);
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 0); // No timeout for binary streaming
-        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $data) {
-            echo $data;
-            if (ob_get_level() > 0) {
-                ob_flush();
-            }
-            flush();
-            return strlen($data);
-        });
+    public function streamFileToOutput(string $fileId): bool {
+        $maxAttempts = 3;
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                $url = $this->getFileDownloadUrl($fileId);
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, $url);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
+                curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 0); // No timeout for binary streaming
+                curl_setopt($ch, CURLOPT_BUFFERSIZE, 131072); // 128KB buffer for high throughput
+                curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $data) {
+                    echo $data;
+                    if (ob_get_level() > 0) {
+                        ob_flush();
+                    }
+                    flush();
+                    return strlen($data);
+                });
 
-        curl_exec($ch);
-        if (PHP_VERSION_ID < 80000) {
-            curl_close($ch);
+                $res = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                if (PHP_VERSION_ID < 80000) {
+                    curl_close($ch);
+                }
+                if ($res !== false && $httpCode === 200) {
+                    return true;
+                }
+                if ($attempt < $maxAttempts) {
+                    usleep(300000 * $attempt);
+                }
+            } catch (Exception $e) {
+                error_log("Stream chunk error for {$fileId} (attempt {$attempt}): " . $e->getMessage());
+                if ($attempt < $maxAttempts) {
+                    usleep(300000 * $attempt);
+                }
+            }
         }
+        return false;
     }
 }

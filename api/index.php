@@ -208,62 +208,85 @@ try {
                 Helpers::error('Failed to save uploaded chunk locally.', 500);
             }
 
-            // Find all pending local part files in this upload session
-            $partFiles = glob("{$uploadSessionDir}/part_*");
-            $accumulatedSize = 0;
-            $pendingParts = [];
-            foreach ($partFiles as $pf) {
-                $accumulatedSize += filesize($pf);
-                $pIndex = (int)str_replace("{$uploadSessionDir}/part_", '', $pf);
-                $pendingParts[$pIndex] = $pf;
-            }
-            ksort($pendingParts);
+            // Continuous pipelined streaming to Telegram Cloud as chunks arrive
+            $lockFile = "{$uploadSessionDir}/.stream.lock";
+            $lockFp = fopen($lockFile, 'c+');
+            if ($lockFp && flock($lockFp, LOCK_EX)) {
+                $stateFile = "{$uploadSessionDir}/session_state.json";
+                $state = file_exists($stateFile) ? (json_decode(file_get_contents($stateFile), true) ?: []) : [];
+                $nextPartIndex = (int)($state['next_part_index'] ?? 0);
+                $batchIndex    = (int)($state['batch_index'] ?? 1);
 
-            $isLastChunk = ($chunkIndex === $totalChunks - 1);
-            $batchThreshold = 10 * 1024 * 1024; // 10MB batch threshold for Telegram document
+                $batchThreshold = 10 * 1024 * 1024; // 10MB per Telegram batch document
 
-            $chunkData = null;
+                while ($nextPartIndex < $totalChunks) {
+                    $contiguousParts = [];
+                    $accumulatedBytes = 0;
+                    $scanIdx = $nextPartIndex;
 
-            // Stream accumulated batch to Telegram when threshold is reached OR on the last chunk
-            if ($accumulatedSize >= $batchThreshold || ($isLastChunk && !empty($pendingParts))) {
-                $batchCounterFile = "{$uploadSessionDir}/.batch_counter";
-                $batchNumber = file_exists($batchCounterFile) ? ((int)file_get_contents($batchCounterFile) + 1) : 1;
-                file_put_contents($batchCounterFile, (string)$batchNumber);
+                    while ($scanIdx < $totalChunks && file_exists("{$uploadSessionDir}/part_{$scanIdx}")) {
+                        $pSize = filesize("{$uploadSessionDir}/part_{$scanIdx}");
+                        $contiguousParts[] = $scanIdx;
+                        $accumulatedBytes += $pSize;
+                        $scanIdx++;
 
-                $batchFilename = "batch_{$batchNumber}_{$filename}";
-                $batchPath = "{$uploadSessionDir}/{$batchFilename}";
-                $outHandle = fopen($batchPath, 'wb');
+                        if ($accumulatedBytes >= $batchThreshold) {
+                            break;
+                        }
+                    }
 
-                foreach ($pendingParts as $idx => $partFile) {
-                    $inHandle = fopen($partFile, 'rb');
-                    stream_copy_to_stream($inHandle, $outHandle);
-                    fclose($inHandle);
-                    @unlink($partFile);
+                    if ($accumulatedBytes >= $batchThreshold) {
+                        $batchFilename = "batch_{$batchIndex}_{$filename}";
+                        $batchPath = "{$uploadSessionDir}/{$batchFilename}";
+                        $outHandle = fopen($batchPath, 'wb');
+
+                        foreach ($contiguousParts as $pIdx) {
+                            $pFilePath = "{$uploadSessionDir}/part_{$pIdx}";
+                            $inHandle = fopen($pFilePath, 'rb');
+                            stream_copy_to_stream($inHandle, $outHandle);
+                            fclose($inHandle);
+                            @unlink($pFilePath);
+                        }
+                        fclose($outHandle);
+
+                        $engine = new StorageEngine();
+                        $tgChunk = $engine->uploadStorageChunk(
+                            $batchPath,
+                            $batchFilename,
+                            "TeleDrive File: {$filename} (Part {$batchIndex})"
+                        );
+
+                        $batchSize = filesize($batchPath);
+                        @unlink($batchPath);
+
+                        $chunksFile = "{$uploadSessionDir}/session_chunks.json";
+                        $chunksList = file_exists($chunksFile) ? (json_decode(file_get_contents($chunksFile), true) ?: []) : [];
+                        $chunksList[] = [
+                            'part'       => $batchIndex,
+                            'message_id' => $tgChunk['message_id'],
+                            'file_id'    => $tgChunk['file_id'],
+                            'size'       => $tgChunk['file_size'] ?: $batchSize,
+                        ];
+                        file_put_contents($chunksFile, json_encode($chunksList, JSON_PRETTY_PRINT));
+
+                        $nextPartIndex = $scanIdx;
+                        $batchIndex++;
+
+                        $state['next_part_index'] = $nextPartIndex;
+                        $state['batch_index']     = $batchIndex;
+                        file_put_contents($stateFile, json_encode($state));
+                    } else {
+                        break;
+                    }
                 }
-                fclose($outHandle);
 
-                $engine = new StorageEngine();
-                $tgChunk = $engine->uploadStorageChunk(
-                    $batchPath,
-                    $batchFilename,
-                    "TeleDrive File: {$filename} (Batch {$batchNumber})"
-                );
-
-                $batchFileSize = filesize($batchPath);
-                @unlink($batchPath);
-
-                $chunkData = [
-                    'part'       => $batchNumber,
-                    'message_id' => $tgChunk['message_id'],
-                    'file_id'    => $tgChunk['file_id'],
-                    'size'       => $tgChunk['file_size'] ?: $batchFileSize,
-                ];
+                flock($lockFp, LOCK_UN);
+                fclose($lockFp);
             }
 
             Helpers::success([
                 'chunk_index'  => $chunkIndex,
                 'total_chunks' => $totalChunks,
-                'chunk_data'   => $chunkData,
                 'received'     => true,
             ], 'Chunk uploaded successfully.');
             break;
@@ -276,40 +299,123 @@ try {
             $filename    = Helpers::sanitizeFilename($_POST['filename'] ?? 'file');
             $parentId    = $_POST['parent_id'] ?? 'root';
             $fileSize    = (int)($_POST['size'] ?? 0);
-            $rawChunks   = $_POST['chunks'] ?? '';
+            $totalChunks = (int)($_POST['total_chunks'] ?? 1);
 
-            // Decode chunks array if passed as JSON string
-            $chunksList = [];
-            if (is_string($rawChunks)) {
-                $chunksList = json_decode($rawChunks, true) ?: [];
-            } elseif (is_array($rawChunks)) {
-                $chunksList = $rawChunks;
+            $uploadSessionDir = TEMP_CHUNK_DIR . '/' . $uploadId;
+            if (!is_dir($uploadSessionDir)) {
+                Helpers::error('Upload session directory not found.', 400);
             }
+
+            $lockFile = "{$uploadSessionDir}/.stream.lock";
+            $lockFp = fopen($lockFile, 'c+');
+            if ($lockFp) {
+                flock($lockFp, LOCK_EX);
+            }
+
+            $stateFile = "{$uploadSessionDir}/session_state.json";
+            $state = file_exists($stateFile) ? (json_decode(file_get_contents($stateFile), true) ?: []) : [];
+            $nextPartIndex = (int)($state['next_part_index'] ?? 0);
+            $batchIndex    = (int)($state['batch_index'] ?? 1);
+
+            // Upload any remaining tail parts (usually only 1 small final batch)
+            if ($nextPartIndex < $totalChunks) {
+                $batchThreshold = 10 * 1024 * 1024;
+                $currentBatchPath = "{$uploadSessionDir}/batch_{$batchIndex}_{$filename}";
+                $currentOut = fopen($currentBatchPath, 'wb');
+                $currentBatchSize = 0;
+                $batchDocs = [];
+
+                for ($i = $nextPartIndex; $i < $totalChunks; $i++) {
+                    $pPath = "{$uploadSessionDir}/part_{$i}";
+                    if (file_exists($pPath)) {
+                        $pSize = filesize($pPath);
+                        $in = fopen($pPath, 'rb');
+                        stream_copy_to_stream($in, $currentOut);
+                        fclose($in);
+                        @unlink($pPath);
+                        $currentBatchSize += $pSize;
+
+                        if ($currentBatchSize >= $batchThreshold && $i < ($totalChunks - 1)) {
+                            fclose($currentOut);
+                            $batchDocs[$batchIndex] = [
+                                'path'     => $currentBatchPath,
+                                'filename' => "batch_{$batchIndex}_{$filename}",
+                                'caption'  => "TeleDrive File: {$filename} (Part {$batchIndex})"
+                            ];
+                            $batchIndex++;
+                            $currentBatchPath = "{$uploadSessionDir}/batch_{$batchIndex}_{$filename}";
+                            $currentOut = fopen($currentBatchPath, 'wb');
+                            $currentBatchSize = 0;
+                        }
+                    }
+                }
+                fclose($currentOut);
+
+                if ($currentBatchSize > 0) {
+                    $batchDocs[$batchIndex] = [
+                        'path'     => $currentBatchPath,
+                        'filename' => "batch_{$batchIndex}_{$filename}",
+                        'caption'  => "TeleDrive File: {$filename} (Part {$batchIndex})"
+                    ];
+                } else {
+                    @unlink($currentBatchPath);
+                }
+
+                if (!empty($batchDocs)) {
+                    $tgClient = new TelegramClient();
+                    $uploadedTail = $tgClient->sendDocumentsBatch(STORAGE_CHANNEL_ID, $batchDocs);
+                    foreach ($batchDocs as $bDoc) {
+                        @unlink($bDoc['path']);
+                    }
+
+                    $chunksFile = "{$uploadSessionDir}/session_chunks.json";
+                    $chunksList = file_exists($chunksFile) ? (json_decode(file_get_contents($chunksFile), true) ?: []) : [];
+                    foreach ($uploadedTail as $uChunk) {
+                        $chunksList[] = [
+                            'part'       => $uChunk['part'] ?? $batchIndex,
+                            'message_id' => $uChunk['message_id'],
+                            'file_id'    => $uChunk['file_id'],
+                            'size'       => $uChunk['file_size'],
+                        ];
+                    }
+                    file_put_contents($chunksFile, json_encode($chunksList, JSON_PRETTY_PRINT));
+                }
+            }
+
+            // Read all accumulated chunks from session_chunks.json
+            $chunksFile = "{$uploadSessionDir}/session_chunks.json";
+            $chunksList = file_exists($chunksFile) ? (json_decode(file_get_contents($chunksFile), true) ?: []) : [];
+
+            if ($lockFp) {
+                flock($lockFp, LOCK_UN);
+                fclose($lockFp);
+            }
+
+            Helpers::removeDir($uploadSessionDir);
 
             if (empty($chunksList)) {
-                Helpers::error('No chunks data received for file indexing.', 400);
+                Helpers::error('No chunks uploaded to Telegram Storage.', 400);
             }
 
-            // Sort chunks by part number ascending
             usort($chunksList, function($a, $b) {
                 return ($a['part'] ?? 0) <=> ($b['part'] ?? 0);
             });
 
-            // Normalize part sequence (1, 2, 3...)
-            $normalizedChunks = [];
-            $partNum = 1;
-            foreach ($chunksList as $chk) {
-                if (!empty($chk['file_id'])) {
-                    $normalizedChunks[] = [
-                        'part'       => $partNum++,
-                        'message_id' => $chk['message_id'] ?? 0,
-                        'file_id'    => $chk['file_id'],
-                        'size'       => $chk['size'] ?? 0,
-                    ];
-                }
+            // Sort and format final chunk records
+            $finalChunks = [];
+            $partSeq = 1;
+            $totalUploadedBytes = 0;
+            foreach ($chunksList as $uChunk) {
+                $finalChunks[] = [
+                    'part'       => $partSeq++,
+                    'message_id' => $uChunk['message_id'],
+                    'file_id'    => $uChunk['file_id'],
+                    'size'       => $uChunk['size'],
+                ];
+                $totalUploadedBytes += (int)$uChunk['size'];
             }
 
-            // Validate parent_id: must be 'root' or a known folder ID
+            // Validate parent folder
             $engine = new StorageEngine();
             if ($parentId !== 'root') {
                 $indexData = $engine->getFileSystemIndex();
@@ -323,12 +429,6 @@ try {
                 if (!$validParent) {
                     Helpers::error('Invalid destination folder.', 400);
                 }
-            }
-
-            // Clean up session directory
-            $uploadSessionDir = TEMP_CHUNK_DIR . '/' . $uploadId;
-            if (is_dir($uploadSessionDir)) {
-                Helpers::removeDir($uploadSessionDir);
             }
 
             // Determine MIME type from filename extension or safe fallback
@@ -348,13 +448,13 @@ try {
                 $detectedMime = $extMap[$ext];
             }
 
-            // Register file in Index Channel
+            // Register complete file in Index Channel (< 50ms)
             $newEntry = $engine->createFileEntry([
                 'name'      => $filename,
-                'size'      => $fileSize,
+                'size'      => $totalUploadedBytes > 0 ? $totalUploadedBytes : $fileSize,
                 'mime_type' => $detectedMime,
                 'parent_id' => $parentId,
-                'chunks'    => $normalizedChunks,
+                'chunks'    => $finalChunks,
             ]);
 
             Helpers::success(['item' => $newEntry], 'File uploaded and indexed successfully.');
@@ -366,6 +466,9 @@ try {
         case 'files.preview':
         case 'files.stream_preview':
             Auth::requireAuth();
+            @set_time_limit(0);
+            @ini_set('max_execution_time', '0');
+            ignore_user_abort(true);
             $id     = $_GET['id'] ?? '';
             $engine = new StorageEngine();
             $index  = $engine->getFileSystemIndex();
@@ -394,13 +497,19 @@ try {
             // Use server-detected MIME type; fallback to stored value which was already validated at upload
             $mimeType = $target['mime_type'] ?: 'application/octet-stream';
 
+            // Calculate exact total size across all chunks
+            $exactChunkSize = 0;
+            foreach ($target['chunks'] as $chunk) {
+                if (!empty($chunk['size'])) {
+                    $exactChunkSize += (int)$chunk['size'];
+                }
+            }
+            $finalSize = $exactChunkSize > 0 ? $exactChunkSize : (int)($target['size'] ?? 0);
+
             header('Content-Type: ' . $mimeType);
             header("Content-Disposition: {$disposition}; filename=\"{$safeFilename}\"; filename*=UTF-8''{$encodedFilename}");
-            if (!empty($target['size'])) {
-                header('Content-Length: ' . $target['size']);
-            }
-            header('Cache-Control: private, max-age=3600');
-            header('Accept-Ranges: none');
+            header('Cache-Control: no-transform, private, max-age=3600');
+            header('X-Content-Type-Options: nosniff');
 
             while (ob_get_level()) {
                 ob_end_clean();

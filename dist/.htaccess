@@ -1,0 +1,31 @@
+# Disable directory indexing
+Options -Indexes
+
+# Enable UTF-8 encoding
+AddDefaultCharset UTF-8
+
+# Protect sensitive files from direct browser access
+<FilesMatch "^\.env|\.git">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Note: Security headers (X-Frame-Options: DENY, X-Content-Type-Options, CSP, etc.)
+# are set exclusively by PHP in api/index.php to avoid duplicate/conflicting headers.
+
+# Optional Apache mod_php upload limit elevation
+<IfModule mod_php.c>
+    php_value upload_max_filesize 64M
+    php_value post_max_size 64M
+    php_value memory_limit 512M
+</IfModule>
+<IfModule mod_php7.c>
+    php_value upload_max_filesize 64M
+    php_value post_max_size 64M
+    php_value memory_limit 512M
+</IfModule>
+<IfModule mod_php8.c>
+    php_value upload_max_filesize 64M
+    php_value post_max_size 64M
+    php_value memory_limit 512M
+</IfModule>

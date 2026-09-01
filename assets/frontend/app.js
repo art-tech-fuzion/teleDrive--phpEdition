@@ -728,45 +728,51 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Create and show download status modal
         const overlay = document.createElement('div');
-        overlay.className = 'td-modal-overlay';
+        overlay.className = 'td-preview-modal';
         overlay.style.cssText = `
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: var(--bg-overlay, rgba(11, 15, 23, 0.8));
-            backdrop-filter: blur(4px);
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(6px);
             display: flex; align-items: center; justify-content: center;
-            z-index: 9999; opacity: 1;
+            z-index: 9999;
         `;
 
         const box = document.createElement('div');
-        box.style.cssText = `
-            background: var(--bg-surface, #1e293b);
-            border: 1px solid var(--border-color, rgba(255,255,255,0.1));
-            border-radius: var(--radius-lg, 12px);
-            padding: 24px; width: 90%; max-width: 400px;
-            box-shadow: var(--shadow-xl);
-            display: flex; flex-direction: column; gap: 16px;
-        `;
+        box.className = 'td-download-modal-box';
 
         box.innerHTML = `
-            <div style="display:flex; align-items:center; gap:12px;">
-                <div class="td-spinner" style="width:22px; height:22px; border:2px solid rgba(59,130,246,0.3); border-top-color:#3b82f6; border-radius:50%; animation:tdSpin 0.8s linear infinite;"></div>
-                <div>
-                    <h3 style="font-size:16px; font-weight:600; color:var(--text-main);">Downloading File</h3>
-                    <p style="font-size:12px; color:var(--text-secondary); max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(fileItem.name)}</p>
+            <div class="td-download-modal-header" style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+                <div class="td-spinner" style="width:24px; height:24px; border:2px solid rgba(0,212,255,0.2); border-top-color:var(--color-primary); border-radius:50%; animation:tdSpin 0.8s linear infinite;"></div>
+                <div style="flex:1; min-width:0;">
+                    <h3 class="td-download-modal-title" style="font-size:16px; font-weight:600; color:var(--text-main);">Downloading File</h3>
+                    <p class="td-download-modal-filename" style="font-size:12px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(fileItem.name)}">${escapeHtml(fileItem.name)}</p>
                 </div>
             </div>
-            <p style="font-size:13px; color:var(--text-secondary); line-height:1.4;">Streaming binary chunks from Telegram Cloud directly to your browser...</p>
-            <div style="display:flex; justify-content:flex-end;">
+            <div class="td-download-progress-bar" style="height:6px; background:var(--bg-body); border-radius:3px; overflow:hidden; margin-bottom:12px;">
+                <div class="td-download-progress-fill" id="td-dl-progress-fill" style="height:100%; width:0%; background:var(--color-primary); transition:width 0.1s linear;"></div>
+            </div>
+            <div class="td-download-modal-meta" style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-secondary);">
+                <span class="td-download-modal-percent" id="td-dl-percent">0%</span>
+                <span class="td-download-modal-size" id="td-dl-size">0 B / ${formatBytes(fileItem.size)}</span>
+                <span class="td-download-modal-speed" id="td-dl-speed">Starting...</span>
+            </div>
+            <div style="display:flex; justify-content:flex-end; margin-top:16px;">
                 <button id="td-cancel-download-btn" style="
                     background: transparent; border: 1px solid var(--border-color);
                     color: var(--color-danger, #ef4444); padding: 6px 14px;
-                    border-radius: 6px; cursor: pointer; font-size:13px; font-weight:500;
+                    border-radius: var(--radius-sm, 6px); cursor: pointer; font-size:12px; font-weight:500;
+                    transition: all 0.2s ease;
                 ">Cancel Download</button>
             </div>
         `;
 
         overlay.appendChild(box);
         document.body.appendChild(overlay);
+
+        const dlFill = box.querySelector('#td-dl-progress-fill');
+        const dlPercent = box.querySelector('#td-dl-percent');
+        const dlSize = box.querySelector('#td-dl-size');
+        const dlSpeed = box.querySelector('#td-dl-speed');
 
         let isCancelled = false;
         box.querySelector('#td-cancel-download-btn').onclick = () => {
@@ -781,11 +787,50 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch(downloadUrl, { signal });
 
             if (!response.ok) {
-                throw new Error(`Server returned HTTP ${response.status}`);
+                let errorMsg = `HTTP ${response.status}`;
+                try {
+                    const errData = await response.json();
+                    if (errData && errData.error) errorMsg = errData.error;
+                } catch (e) {}
+                throw new Error(errorMsg);
             }
 
-            const blob = await response.blob();
+            const contentLengthHeader = response.headers.get('Content-Length');
+            const totalBytes = contentLengthHeader ? parseInt(contentLengthHeader, 10) : (fileItem.size || 0);
+
+            const reader = response.body.getReader();
+            const chunks = [];
+            let receivedBytes = 0;
+            const startTime = Date.now();
+
+            while (true) {
+                if (isCancelled) break;
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                chunks.push(value);
+                receivedBytes += value.length;
+
+                const percent = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
+                dlFill.style.width = `${percent}%`;
+                dlPercent.textContent = `${percent}%`;
+                dlSize.textContent = totalBytes > 0
+                    ? `${formatBytes(receivedBytes)} / ${formatBytes(totalBytes)}`
+                    : `${formatBytes(receivedBytes)}`;
+
+                const elapsedSec = (Date.now() - startTime) / 1000;
+                if (elapsedSec > 0.4 && receivedBytes > 0) {
+                    const speed = receivedBytes / elapsedSec;
+                    dlSpeed.textContent = `${formatBytes(speed)}/s`;
+                }
+            }
+
             if (!isCancelled) {
+                dlFill.style.width = '100%';
+                dlPercent.textContent = '100%';
+                dlSpeed.textContent = 'Finalizing...';
+
+                const blob = new Blob(chunks, { type: fileItem.mime_type || 'application/octet-stream' });
                 const blobUrl = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = blobUrl;
@@ -794,8 +839,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 a.click();
                 a.remove();
                 window.URL.revokeObjectURL(blobUrl);
-                overlay.remove();
-                TeleDrive.toast(`Download complete: ${fileItem.name}`, 'success');
+
+                setTimeout(() => {
+                    overlay.remove();
+                    TeleDrive.toast(`Download complete: ${fileItem.name}`, 'success');
+                }, 400);
             }
         } catch (err) {
             overlay.remove();
@@ -848,6 +896,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 16. Client-Side Chunked File Upload Engine with Cancellation
     async function handleFilesUpload(files) {
+        if (!files || files.length === 0) return;
+
         uploadQueue.style.display = 'block';
 
         for (const file of files) {
@@ -866,10 +916,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function uploadSingleFile(file) {
         const uploadId = 'up_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        const chunkSize = state.chunkSize || 15 * 1024 * 1024;
+        const chunkSize = state.chunkSize || Math.floor(1.5 * 1024 * 1024);
         const totalChunks = Math.ceil(file.size / chunkSize) || 1;
+        const CONCURRENCY = Math.min(6, totalChunks);
         let isCancelled = false;
-        let activeXhr = null;
+        const activeXhrs = new Set();
 
         // Create UI Item in queue with Cancel button, Percentage, Size & Status indicators
         const qItem = document.createElement('div');
@@ -885,7 +936,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="td-queue-item-meta">
                 <span class="td-queue-percent">0%</span>
                 <span class="td-queue-size">0 B / ${formatBytes(file.size)}</span>
-                <span class="td-queue-status">Starting...</span>
+                <span class="td-queue-speed">Starting...</span>
             </div>
         `;
         queueItems.appendChild(qItem);
@@ -893,13 +944,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const cancelBtn = qItem.querySelector('.td-queue-item-cancel');
         const percentLabel = qItem.querySelector('.td-queue-percent');
         const sizeLabel = qItem.querySelector('.td-queue-size');
-        const statusLabel = qItem.querySelector('.td-queue-status');
+        const speedLabel = qItem.querySelector('.td-queue-speed');
 
         cancelBtn.onclick = () => {
             isCancelled = true;
-            if (activeXhr) {
-                try { activeXhr.abort(); } catch (e) {}
-            }
+            activeXhrs.forEach(xhr => {
+                try { xhr.abort(); } catch (e) {}
+            });
+            activeXhrs.clear();
             qItem.remove();
             TeleDrive.toast(`Upload cancelled: ${file.name}`, 'warning');
             if (queueItems.children.length === 0) {
@@ -907,111 +959,124 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        const collectedTelegramChunks = [];
         const startTime = Date.now();
-        let totalUploadedBytes = 0;
+        const completedChunkBytes = new Map();
+        const activeChunkBytes = new Map();
+
+        function updateProgressUI() {
+            if (isCancelled) return;
+            let totalLoaded = 0;
+            for (const bytes of completedChunkBytes.values()) {
+                totalLoaded += bytes;
+            }
+            for (const bytes of activeChunkBytes.values()) {
+                totalLoaded += bytes;
+            }
+            totalLoaded = Math.min(totalLoaded, file.size);
+
+            const percent = Math.min(98, Math.round((totalLoaded / file.size) * 100));
+            fillBar.style.width = `${percent}%`;
+            percentLabel.textContent = `${percent}%`;
+            sizeLabel.textContent = `${formatBytes(totalLoaded)} / ${formatBytes(file.size)}`;
+
+            const elapsedSec = (Date.now() - startTime) / 1000;
+            if (elapsedSec > 0.4 && totalLoaded > 0) {
+                const speedBytesPerSec = totalLoaded / elapsedSec;
+                speedLabel.textContent = `${formatBytes(speedBytesPerSec)}/s (${CONCURRENCY}x)`;
+            }
+        }
 
         try {
-            for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
-                if (isCancelled) return;
+            let nextChunkIdx = 0;
 
-                const start = chunkIdx * chunkSize;
-                const end = Math.min(start + chunkSize, file.size);
-                const chunkBlob = file.slice(start, end);
-                const chunkBytes = end - start;
+            async function worker() {
+                while (nextChunkIdx < totalChunks && !isCancelled) {
+                    const chunkIdx = nextChunkIdx++;
+                    const start = chunkIdx * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    const chunkBlob = file.slice(start, end);
+                    const chunkBytes = end - start;
 
-                statusLabel.textContent = totalChunks > 1 
-                    ? `Uploading chunk ${chunkIdx + 1} of ${totalChunks}...`
-                    : `Uploading to Telegram Cloud...`;
+                    await new Promise((resolve, reject) => {
+                        const xhr = new XMLHttpRequest();
+                        activeXhrs.add(xhr);
 
-                const chunkResult = await new Promise((resolve, reject) => {
-                    const xhr = new XMLHttpRequest();
-                    activeXhr = xhr;
-
-                    xhr.upload.onprogress = (e) => {
-                        if (isCancelled) return;
-                        const currentChunkLoaded = e.lengthComputable ? e.loaded : 0;
-                        const overallLoaded = totalUploadedBytes + Math.min(currentChunkLoaded, chunkBytes);
-                        const percent = Math.min(98, Math.round((overallLoaded / file.size) * 100));
-
-                        fillBar.style.width = `${percent}%`;
-                        percentLabel.textContent = `${percent}%`;
-                        sizeLabel.textContent = `${formatBytes(overallLoaded)} / ${formatBytes(file.size)}`;
-
-                        const elapsedSec = (Date.now() - startTime) / 1000;
-                        if (elapsedSec > 0.5 && overallLoaded > 0) {
-                            const speedBytesPerSec = overallLoaded / elapsedSec;
-                            statusLabel.textContent = `Part ${chunkIdx + 1}/${totalChunks} • ${formatBytes(speedBytesPerSec)}/s`;
-                        }
-                    };
-
-                    xhr.onload = () => {
-                        activeXhr = null;
-                        if (xhr.status >= 200 && xhr.status < 300) {
-                            try {
-                                const json = JSON.parse(xhr.responseText);
-                                if (json && json.success) {
-                                    resolve(json);
-                                } else {
-                                    reject(new Error((json && json.error) || `Chunk ${chunkIdx + 1} upload failed`));
-                                }
-                            } catch (parseErr) {
-                                reject(new Error(`Server returned invalid response (HTTP ${xhr.status})`));
+                        xhr.upload.onprogress = (e) => {
+                            if (isCancelled) return;
+                            if (e.lengthComputable) {
+                                activeChunkBytes.set(chunkIdx, Math.min(e.loaded, chunkBytes));
+                                updateProgressUI();
                             }
-                        } else {
-                            let errorMsg = `HTTP error ${xhr.status}`;
-                            try {
-                                const errJson = JSON.parse(xhr.responseText);
-                                if (errJson && errJson.error) errorMsg = errJson.error;
-                            } catch (e) {}
-                            reject(new Error(errorMsg));
-                        }
-                    };
+                        };
 
-                    xhr.onerror = () => {
-                        activeXhr = null;
-                        reject(new Error('Network error during chunk upload'));
-                    };
+                        xhr.onload = () => {
+                            activeXhrs.delete(xhr);
+                            activeChunkBytes.delete(chunkIdx);
 
-                    xhr.onabort = () => {
-                        activeXhr = null;
-                        reject(new Error('Upload aborted'));
-                    };
+                            if (xhr.status >= 200 && xhr.status < 300) {
+                                try {
+                                    const json = JSON.parse(xhr.responseText);
+                                    if (json && json.success) {
+                                        completedChunkBytes.set(chunkIdx, chunkBytes);
+                                        updateProgressUI();
+                                        resolve(json);
+                                    } else {
+                                        reject(new Error((json && json.error) || `Chunk ${chunkIdx + 1} upload failed`));
+                                    }
+                                } catch (parseErr) {
+                                    reject(new Error(`Server returned invalid response (HTTP ${xhr.status})`));
+                                }
+                            } else {
+                                let errorMsg = `HTTP error ${xhr.status}`;
+                                try {
+                                    const errJson = JSON.parse(xhr.responseText);
+                                    if (errJson && errJson.error) errorMsg = errJson.error;
+                                } catch (e) {}
+                                reject(new Error(errorMsg));
+                            }
+                        };
 
-                    const formData = new FormData();
-                    formData.append('action', 'files.upload_chunk');
-                    formData.append('_csrf', getCsrfToken());
-                    formData.append('upload_id', uploadId);
-                    formData.append('chunk_index', chunkIdx);
-                    formData.append('total_chunks', totalChunks);
-                    formData.append('filename', file.name);
-                    formData.append('chunk', chunkBlob, file.name);
+                        xhr.onerror = () => {
+                            activeXhrs.delete(xhr);
+                            activeChunkBytes.delete(chunkIdx);
+                            reject(new Error(`Network error on chunk ${chunkIdx + 1}`));
+                        };
 
-                    xhr.open('POST', 'api/index.php?action=files.upload_chunk', true);
-                    xhr.setRequestHeader('X-CSRF-Token', getCsrfToken());
-                    xhr.send(formData);
-                });
+                        xhr.onabort = () => {
+                            activeXhrs.delete(xhr);
+                            activeChunkBytes.delete(chunkIdx);
+                            reject(new Error('Upload aborted'));
+                        };
 
-                if (isCancelled) return;
+                        const formData = new FormData();
+                        formData.append('action', 'files.upload_chunk');
+                        formData.append('_csrf', getCsrfToken());
+                        formData.append('upload_id', uploadId);
+                        formData.append('chunk_index', chunkIdx);
+                        formData.append('total_chunks', totalChunks);
+                        formData.append('filename', file.name);
+                        formData.append('chunk', chunkBlob, file.name);
 
-                if (chunkResult && chunkResult.chunk_data) {
-                    if (Array.isArray(chunkResult.chunk_data)) {
-                        collectedTelegramChunks.push(...chunkResult.chunk_data);
-                    } else {
-                        collectedTelegramChunks.push(chunkResult.chunk_data);
-                    }
+                        xhr.open('POST', 'api/index.php?action=files.upload_chunk', true);
+                        xhr.setRequestHeader('X-CSRF-Token', getCsrfToken());
+                        xhr.send(formData);
+                    });
                 }
-                totalUploadedBytes += chunkBytes;
-
-                const overallPercent = Math.min(99, Math.round((totalUploadedBytes / file.size) * 100));
-                fillBar.style.width = `${overallPercent}%`;
-                percentLabel.textContent = `${overallPercent}%`;
-                sizeLabel.textContent = `${formatBytes(totalUploadedBytes)} / ${formatBytes(file.size)}`;
             }
+
+            // Spawn concurrent workers
+            const workers = [];
+            for (let i = 0; i < CONCURRENCY; i++) {
+                workers.push(worker());
+            }
+
+            await Promise.all(workers);
 
             if (isCancelled) return;
 
-            statusLabel.textContent = 'Registering with Telegram Index...';
+            speedLabel.textContent = 'Saving to Telegram Cloud...';
+            percentLabel.textContent = '99%';
+            fillBar.style.width = '99%';
 
             // Complete upload and register file in Index Channel
             const completeFormData = new FormData();
@@ -1022,7 +1087,6 @@ document.addEventListener('DOMContentLoaded', () => {
             completeFormData.append('size', file.size);
             completeFormData.append('parent_id', state.currentFolderId);
             completeFormData.append('total_chunks', totalChunks);
-            completeFormData.append('chunks', JSON.stringify(collectedTelegramChunks));
 
             const completeRes = await apiFetch('api/index.php?action=files.complete_upload', {
                 method: 'POST',
@@ -1035,7 +1099,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 fillBar.style.width = '100%';
                 percentLabel.textContent = '100%';
                 sizeLabel.textContent = `${formatBytes(file.size)} / ${formatBytes(file.size)}`;
-                statusLabel.textContent = 'Completed!';
+                speedLabel.textContent = 'Completed!';
                 cancelBtn.style.display = 'none';
                 TeleDrive.toast(`Uploaded: ${file.name}`, 'success');
 
@@ -1057,8 +1121,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isCancelled) {
                 TeleDrive.toast(`Upload failed for ${file.name}: ${err.message}`, 'error');
                 fillBar.style.backgroundColor = 'var(--color-danger)';
-                statusLabel.textContent = 'Failed';
-                statusLabel.style.color = 'var(--color-danger)';
+                speedLabel.textContent = 'Failed';
+                speedLabel.style.color = 'var(--color-danger)';
             }
         }
     }
@@ -1084,7 +1148,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function formatBytes(bytes) {
         if (!bytes || bytes <= 0) return '0 B';
-        const k = 1024;
+        const k = 1000;
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];

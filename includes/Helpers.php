@@ -52,15 +52,15 @@ class Helpers {
     }
 
     /**
-     * Format byte sizes into human readable units
+     * Format byte sizes into human readable decimal units (matching macOS Finder & storage standards)
      */
-    public static function formatBytes(int $bytes, int $precision = 2): string {
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $bytes = max($bytes, 0);
-        $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
-        $pow = min($pow, count($units) - 1);
-        $bytes /= pow(1024, $pow);
-        return round($bytes, $precision) . ' ' . $units[$pow];
+    public static function formatBytes(int $bytes, int $precision = 1): string {
+        $units = ['B', 'MB', 'MB', 'GB', 'TB'];
+        if ($bytes <= 0) return '0 B';
+        if ($bytes < 1000) return $bytes . ' B';
+        if ($bytes < 1000000) return round($bytes / 1000, $precision) . ' KB';
+        if ($bytes < 1000000000) return round($bytes / 1000000, $precision) . ' MB';
+        return round($bytes / 1000000000, $precision) . ' GB';
     }
 
     /**
