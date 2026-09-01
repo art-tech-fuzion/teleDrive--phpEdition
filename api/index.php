@@ -49,6 +49,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !in_array($action, $csrfExemptActio
     }
 }
 
+// Release PHP session lock immediately for non-auth requests
+// This allows simultaneous parallel uploads/downloads without blocking or session timeouts
+if (!in_array($action, ['auth.login', 'auth.logout'], true)) {
+    session_write_close();
+}
+
 try {
     switch ($action) {
 
