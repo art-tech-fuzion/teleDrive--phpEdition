@@ -22,9 +22,12 @@ if (!defined('TELEDRIVE_INIT')) {
 
 </head>
 <body class="td-app-body">
+    <!-- Mobile Sidebar Backdrop Overlay -->
+    <div class="td-sidebar-backdrop" id="td-sidebar-backdrop"></div>
+
     <div class="td-layout">
         <!-- Sidebar Navigation -->
-        <aside class="td-sidebar">
+        <aside class="td-sidebar" id="td-sidebar">
             <div class="td-brand">
                 <div class="td-brand-icon">
                     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
@@ -33,6 +36,7 @@ if (!defined('TELEDRIVE_INIT')) {
                     </svg>
                 </div>
                 <div class="td-brand-name">TeleDrive</div>
+                <button id="td-sidebar-close" class="td-sidebar-close-btn" aria-label="Close Navigation Menu" title="Close Menu">✕</button>
             </div>
 
             <div class="td-sidebar-actions">
@@ -94,6 +98,14 @@ if (!defined('TELEDRIVE_INIT')) {
         <main class="td-main">
             <!-- Top App Bar -->
             <header class="td-header">
+                <button id="td-mobile-menu-btn" class="td-btn-icon td-mobile-menu-btn" title="Open Navigation Menu" aria-label="Open Navigation Menu">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="3" y1="12" x2="21" y2="12"></line>
+                        <line x1="3" y1="6" x2="21" y2="6"></line>
+                        <line x1="3" y1="18" x2="21" y2="18"></line>
+                    </svg>
+                </button>
+
                 <div class="td-search-box">
                     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="11" cy="11" r="8"/>

@@ -72,6 +72,37 @@ document.addEventListener('DOMContentLoaded', () => {
     const uploadQueue = document.getElementById('td-upload-queue');
     const queueItems = document.getElementById('td-queue-items');
     const queueClose = document.getElementById('td-queue-close');
+    const mobileMenuBtn = document.getElementById('td-mobile-menu-btn');
+    const sidebarCloseBtn = document.getElementById('td-sidebar-close');
+    const sidebarBackdrop = document.getElementById('td-sidebar-backdrop');
+    const sidebar = document.getElementById('td-sidebar');
+
+    // Mobile Sidebar Drawer Handlers
+    function openMobileSidebar() {
+        if (sidebar) sidebar.classList.add('td-sidebar-open');
+        if (sidebarBackdrop) sidebarBackdrop.classList.add('active');
+    }
+
+    function closeMobileSidebar() {
+        if (sidebar) sidebar.classList.remove('td-sidebar-open');
+        if (sidebarBackdrop) sidebarBackdrop.classList.remove('active');
+    }
+
+    if (mobileMenuBtn) {
+        mobileMenuBtn.addEventListener('click', openMobileSidebar);
+    }
+    if (sidebarCloseBtn) {
+        sidebarCloseBtn.addEventListener('click', closeMobileSidebar);
+    }
+    if (sidebarBackdrop) {
+        sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeMobileSidebar();
+        }
+    });
 
     // 1. Initial Load & Routing
     loadFolder('root');
@@ -99,6 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
         navAllFiles.onclick = (e) => {
             e.preventDefault();
             state.folderPath = [{ id: 'root', name: 'My Drive' }];
+            closeMobileSidebar();
             loadFolder('root');
         };
     }

@@ -17,13 +17,14 @@ window.TeleDrive = window.TeleDrive || {};
             toastContainer.id = 'td-toast-container';
             toastContainer.style.cssText = `
                 position: fixed;
-                top: 24px;
-                right: 24px;
+                top: 20px;
+                right: 20px;
                 display: flex;
                 flex-direction: column;
-                gap: 12px;
+                gap: 10px;
                 z-index: 9999;
                 pointer-events: none;
+                max-width: calc(100vw - 40px);
             `;
             document.body.appendChild(toastContainer);
         }
@@ -51,22 +52,24 @@ window.TeleDrive = window.TeleDrive || {};
             loading: '<div style="width:16px; height:16px; border:2px solid rgba(59,130,246,0.3); border-top-color:#3b82f6; border-radius:50%; animation:tdSpin 0.7s linear infinite;"></div>'
         };
 
+        const isMobile = window.innerWidth <= 640;
         toast.style.cssText = `
             background: var(--bg-surface, #1e293b);
             border: 1px solid ${borderMap[type] || borderMap.info};
             border-left: 4px solid ${borderMap[type] || borderMap.info};
             color: var(--text-main, #f8fafc);
-            padding: 12px 18px;
+            padding: 12px 16px;
             border-radius: var(--radius-md, 8px);
             font-size: var(--font-size-sm, 14px);
             box-shadow: var(--shadow-lg, 0 10px 25px rgba(0,0,0,0.3));
             display: flex;
             align-items: center;
             gap: 10px;
-            min-width: 260px;
-            max-width: 420px;
+            min-width: ${isMobile ? '0' : '260px'};
+            width: ${isMobile ? '100%' : 'auto'};
+            max-width: ${isMobile ? '100%' : '420px'};
             pointer-events: auto;
-            transform: translateX(120%);
+            transform: ${isMobile ? 'translateY(-20px)' : 'translateX(120%)'};
             opacity: 0;
             transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, border-color 0.2s ease;
         `;
@@ -86,7 +89,7 @@ window.TeleDrive = window.TeleDrive || {};
 
         // Animate In
         requestAnimationFrame(() => {
-            toast.style.transform = 'translateX(0)';
+            toast.style.transform = isMobile ? 'translateY(0)' : 'translateX(0)';
             toast.style.opacity = '1';
         });
 
@@ -103,7 +106,7 @@ window.TeleDrive = window.TeleDrive || {};
 
         function dismiss() {
             if (dismissTimeout) clearTimeout(dismissTimeout);
-            toast.style.transform = 'translateX(120%)';
+            toast.style.transform = isMobile ? 'translateY(-20px)' : 'translateX(120%)';
             toast.style.opacity = '0';
             setTimeout(() => {
                 if (toast.parentNode) toast.remove();
