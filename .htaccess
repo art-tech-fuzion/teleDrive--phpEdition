@@ -4,11 +4,25 @@ Options -Indexes
 # Enable UTF-8 encoding
 AddDefaultCharset UTF-8
 
-# Protect sensitive files from direct browser access
-<FilesMatch "^\.env|\.git">
-    Order allow,deny
-    Deny from all
-</FilesMatch>
+# Protect sensitive files from direct browser access (Apache 2.2 & 2.4 compatible)
+<Files ".env">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</Files>
+<Files ".gitignore">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</Files>
 
 # Note: Security headers (X-Frame-Options: DENY, X-Content-Type-Options, CSP, etc.)
 # are set exclusively by PHP in api/index.php to avoid duplicate/conflicting headers.

@@ -38,8 +38,9 @@ document.addEventListener('DOMContentLoaded', () => {
         return `<button class="td-action-btn td-action-${type}" title="${title}">${SVG_ICONS[type]}</button>`;
     }
 
-    // State
-    // State
+    // ---------------------------------------------------------------------------
+    // Application State
+    // ---------------------------------------------------------------------------
     const state = {
         currentFolderId: 'root',
         folderPath: [{ id: 'root', name: 'My Drive' }],

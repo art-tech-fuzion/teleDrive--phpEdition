@@ -22,8 +22,9 @@ class TelegramClient {
     }
 
     public function __destruct() {
-        if ($this->ch && is_resource($this->ch)) {
+        if ($this->ch && (PHP_VERSION_ID < 80000 ? is_resource($this->ch) : $this->ch instanceof \CurlHandle)) {
             curl_close($this->ch);
+            $this->ch = null;
         }
     }
 

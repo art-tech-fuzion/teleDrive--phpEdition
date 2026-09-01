@@ -55,7 +55,7 @@ class Helpers {
      * Format byte sizes into human readable decimal units (matching macOS Finder & storage standards)
      */
     public static function formatBytes(int $bytes, int $precision = 1): string {
-        $units = ['B', 'MB', 'MB', 'GB', 'TB'];
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
         if ($bytes <= 0) return '0 B';
         if ($bytes < 1000) return $bytes . ' B';
         if ($bytes < 1000000) return round($bytes / 1000, $precision) . ' KB';

@@ -115,12 +115,26 @@ class StorageEngine {
         }
 
         // 4. Detect top message watermark in Index Channel
+        //    Send a transient sync probe message, read its ID as topMsgId, then immediately delete it.
+        //    Safe delete: retry once on failure. If delete still fails, store the orphan ID so it is
+        //    excluded from the delta scan range and won't count toward compaction.
         $topMsgId = 0;
+        $orphanSyncId = 0;
         try {
             $ping = $this->telegram->sendMessage($this->indexChannel, "<code>sync</code>");
             $topMsgId = (int)($ping['message_id'] ?? 0);
             if ($topMsgId > 0) {
-                $this->telegram->deleteMessage($this->indexChannel, $topMsgId);
+                $deleted = $this->telegram->deleteMessage($this->indexChannel, $topMsgId);
+                if (!$deleted) {
+                    // Retry once after a short delay
+                    usleep(300000);
+                    $deleted = $this->telegram->deleteMessage($this->indexChannel, $topMsgId);
+                    if (!$deleted) {
+                        // Mark as orphan — exclude from delta scan so it never triggers compaction
+                        $orphanSyncId = $topMsgId;
+                        error_log("TeleDrive: sync probe message {$topMsgId} could not be deleted and will be excluded from delta scan.");
+                    }
+                }
             }
         } catch (Exception $e) {
             error_log("Top watermark detection note: " . $e->getMessage());
@@ -145,8 +159,12 @@ class StorageEngine {
         }
 
         // Scan delta messages concurrently using high-speed multi-cURL
+        // Exclude the orphan sync probe ID (if delete failed) so it never counts toward compaction
         if ($startMsgId <= $endMsgId) {
             $scanIds = range($startMsgId, $endMsgId);
+            if ($orphanSyncId > 0) {
+                $scanIds = array_values(array_filter($scanIds, fn($id) => $id !== $orphanSyncId));
+            }
             $rawMessages = $this->telegram->fetchMessagesBatch($this->indexChannel, $this->indexChannel, $scanIds);
 
             foreach ($rawMessages as $scanId => $fwdMsg) {
