@@ -61,11 +61,14 @@ class TelegramClient {
             }
 
             if ($hasFile) {
+                curl_setopt($this->ch, CURLOPT_TIMEOUT, 180); // 3 minutes timeout for chunk uploads
                 curl_setopt($this->ch, CURLOPT_POSTFIELDS, $params);
             } else {
+                curl_setopt($this->ch, CURLOPT_TIMEOUT, 45);
                 curl_setopt($this->ch, CURLOPT_POSTFIELDS, http_build_query($params));
             }
         } else {
+            curl_setopt($this->ch, CURLOPT_TIMEOUT, 45);
             curl_setopt($this->ch, CURLOPT_HTTPGET, true);
         }
 
@@ -343,6 +346,8 @@ class TelegramClient {
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 0); // No timeout for binary streaming
         curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $data) {
             echo $data;
             if (ob_get_level() > 0) {

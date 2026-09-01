@@ -163,22 +163,32 @@ try {
 
         case 'files.upload_chunk':
             Auth::requireAuth();
-            if (empty($_FILES['chunk']['tmp_name'])) {
-                Helpers::error('No file chunk received.');
+            @set_time_limit(0);
+
+            if (isset($_FILES['chunk']['error']) && $_FILES['chunk']['error'] !== UPLOAD_ERR_OK) {
+                $errCode = (int)$_FILES['chunk']['error'];
+                if ($errCode === UPLOAD_ERR_INI_SIZE || $errCode === UPLOAD_ERR_FORM_SIZE) {
+                    Helpers::error("Chunk size exceeded server limit (upload_max_filesize: " . ini_get('upload_max_filesize') . ").", 400);
+                }
+                Helpers::error("Chunk upload error (code {$errCode}).", 400);
             }
 
-            $uploadId   = preg_replace('/[^\w\-]/', '', $_POST['upload_id'] ?? '');
-            $chunkIndex = (int)($_POST['chunk_index'] ?? 0);
-            $totalChunks= (int)($_POST['total_chunks'] ?? 1);
-            $filename   = Helpers::sanitizeFilename($_POST['filename'] ?? 'file');
+            if (empty($_FILES['chunk']['tmp_name']) || !is_uploaded_file($_FILES['chunk']['tmp_name'])) {
+                Helpers::error('No file chunk received.', 400);
+            }
+
+            $uploadId    = preg_replace('/[^\w\-]/', '', $_POST['upload_id'] ?? '');
+            $chunkIndex  = (int)($_POST['chunk_index'] ?? 0);
+            $totalChunks = (int)($_POST['total_chunks'] ?? 1);
+            $filename    = Helpers::sanitizeFilename($_POST['filename'] ?? 'file');
 
             if (empty($uploadId)) {
-                Helpers::error('Invalid upload session ID.');
+                Helpers::error('Invalid upload session ID.', 400);
             }
 
             // Validate chunk index is within expected bounds
             if ($chunkIndex < 0 || $chunkIndex >= $totalChunks) {
-                Helpers::error('Chunk index out of bounds.');
+                Helpers::error('Chunk index out of bounds.', 400);
             }
 
             $uploadSessionDir = TEMP_CHUNK_DIR . '/' . $uploadId;
@@ -195,29 +205,113 @@ try {
 
             $chunkPath = "{$uploadSessionDir}/part_{$chunkIndex}";
             if (!move_uploaded_file($_FILES['chunk']['tmp_name'], $chunkPath)) {
-                Helpers::error('Failed to save uploaded chunk.');
+                Helpers::error('Failed to save uploaded chunk locally.', 500);
+            }
+
+            // Find all pending local part files in this upload session
+            $partFiles = glob("{$uploadSessionDir}/part_*");
+            $accumulatedSize = 0;
+            $pendingParts = [];
+            foreach ($partFiles as $pf) {
+                $accumulatedSize += filesize($pf);
+                $pIndex = (int)str_replace("{$uploadSessionDir}/part_", '', $pf);
+                $pendingParts[$pIndex] = $pf;
+            }
+            ksort($pendingParts);
+
+            $isLastChunk = ($chunkIndex === $totalChunks - 1);
+            $batchThreshold = 10 * 1024 * 1024; // 10MB batch threshold for Telegram document
+
+            $chunkData = null;
+
+            // Stream accumulated batch to Telegram when threshold is reached OR on the last chunk
+            if ($accumulatedSize >= $batchThreshold || ($isLastChunk && !empty($pendingParts))) {
+                $batchCounterFile = "{$uploadSessionDir}/.batch_counter";
+                $batchNumber = file_exists($batchCounterFile) ? ((int)file_get_contents($batchCounterFile) + 1) : 1;
+                file_put_contents($batchCounterFile, (string)$batchNumber);
+
+                $batchFilename = "batch_{$batchNumber}_{$filename}";
+                $batchPath = "{$uploadSessionDir}/{$batchFilename}";
+                $outHandle = fopen($batchPath, 'wb');
+
+                foreach ($pendingParts as $idx => $partFile) {
+                    $inHandle = fopen($partFile, 'rb');
+                    stream_copy_to_stream($inHandle, $outHandle);
+                    fclose($inHandle);
+                    @unlink($partFile);
+                }
+                fclose($outHandle);
+
+                $engine = new StorageEngine();
+                $tgChunk = $engine->uploadStorageChunk(
+                    $batchPath,
+                    $batchFilename,
+                    "TeleDrive File: {$filename} (Batch {$batchNumber})"
+                );
+
+                $batchFileSize = filesize($batchPath);
+                @unlink($batchPath);
+
+                $chunkData = [
+                    'part'       => $batchNumber,
+                    'message_id' => $tgChunk['message_id'],
+                    'file_id'    => $tgChunk['file_id'],
+                    'size'       => $tgChunk['file_size'] ?: $batchFileSize,
+                ];
             }
 
             Helpers::success([
                 'chunk_index'  => $chunkIndex,
                 'total_chunks' => $totalChunks,
+                'chunk_data'   => $chunkData,
                 'received'     => true,
             ], 'Chunk uploaded successfully.');
             break;
 
         case 'files.complete_upload':
             Auth::requireAuth();
+            @set_time_limit(0);
+
             $uploadId    = preg_replace('/[^\w\-]/', '', $_POST['upload_id'] ?? '');
             $filename    = Helpers::sanitizeFilename($_POST['filename'] ?? 'file');
             $parentId    = $_POST['parent_id'] ?? 'root';
             $fileSize    = (int)($_POST['size'] ?? 0);
-            // Note: client-submitted mime_type is intentionally IGNORED for security.
-            // Actual MIME type is detected server-side from file bytes after assembly.
-            $totalChunks = (int)($_POST['total_chunks'] ?? 1);
+            $rawChunks   = $_POST['chunks'] ?? '';
+
+            // Decode chunks array if passed as JSON string
+            $chunksList = [];
+            if (is_string($rawChunks)) {
+                $chunksList = json_decode($rawChunks, true) ?: [];
+            } elseif (is_array($rawChunks)) {
+                $chunksList = $rawChunks;
+            }
+
+            if (empty($chunksList)) {
+                Helpers::error('No chunks data received for file indexing.', 400);
+            }
+
+            // Sort chunks by part number ascending
+            usort($chunksList, function($a, $b) {
+                return ($a['part'] ?? 0) <=> ($b['part'] ?? 0);
+            });
+
+            // Normalize part sequence (1, 2, 3...)
+            $normalizedChunks = [];
+            $partNum = 1;
+            foreach ($chunksList as $chk) {
+                if (!empty($chk['file_id'])) {
+                    $normalizedChunks[] = [
+                        'part'       => $partNum++,
+                        'message_id' => $chk['message_id'] ?? 0,
+                        'file_id'    => $chk['file_id'],
+                        'size'       => $chk['size'] ?? 0,
+                    ];
+                }
+            }
 
             // Validate parent_id: must be 'root' or a known folder ID
+            $engine = new StorageEngine();
             if ($parentId !== 'root') {
-                $engine    = new StorageEngine();
                 $indexData = $engine->getFileSystemIndex();
                 $validParent = false;
                 foreach ($indexData['items'] as $it) {
@@ -229,68 +323,38 @@ try {
                 if (!$validParent) {
                     Helpers::error('Invalid destination folder.', 400);
                 }
-            } else {
-                $engine = new StorageEngine();
             }
 
+            // Clean up session directory
             $uploadSessionDir = TEMP_CHUNK_DIR . '/' . $uploadId;
-            if (!is_dir($uploadSessionDir)) {
-                Helpers::error('Upload session not found.');
+            if (is_dir($uploadSessionDir)) {
+                Helpers::removeDir($uploadSessionDir);
             }
 
-            // Path traversal guard on upload session directory
-            $realSession = realpath($uploadSessionDir) ?: $uploadSessionDir;
-            $realBase    = realpath(TEMP_CHUNK_DIR) ?: TEMP_CHUNK_DIR;
-            if (strpos($realSession, $realBase) !== 0) {
-                Helpers::error('Invalid upload session.', 400);
-            }
-
-            // Assemble all chunks into a single file
-            $assembledFile = "{$uploadSessionDir}/assembled_{$filename}";
-            $outHandle = fopen($assembledFile, 'wb');
-            for ($i = 0; $i < $totalChunks; $i++) {
-                $partPath = "{$uploadSessionDir}/part_{$i}";
-                if (!file_exists($partPath)) {
-                    fclose($outHandle);
-                    Helpers::error("Missing chunk part {$i}.");
-                }
-                $inHandle = fopen($partPath, 'rb');
-                stream_copy_to_stream($inHandle, $outHandle);
-                fclose($inHandle);
-            }
-            fclose($outHandle);
-
-            // Detect actual MIME type from file bytes (server-side, ignore client value)
-            $detectedMime = mime_content_type($assembledFile) ?: 'application/octet-stream';
-            // Safety: force download disposition for dangerous types to prevent XSS
-            $inlineSafeMimes = [
-                'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
-                'video/mp4', 'video/webm', 'audio/mpeg', 'audio/ogg', 'audio/wav',
-                'application/pdf', 'text/plain'
+            // Determine MIME type from filename extension or safe fallback
+            $detectedMime = 'application/octet-stream';
+            $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+            $extMap = [
+                'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png',
+                'gif' => 'image/gif', 'webp' => 'image/webp', 'svg' => 'image/svg+xml',
+                'mp4' => 'video/mp4', 'webm' => 'video/webm', 'mkv' => 'video/webm',
+                'mp3' => 'audio/mpeg', 'ogg' => 'audio/ogg', 'wav' => 'audio/wav',
+                'pdf' => 'application/pdf', 'txt' => 'text/plain', 'json' => 'application/json',
+                'zip' => 'application/zip', 'rar' => 'application/x-rar-compressed',
+                'tar' => 'application/x-tar', 'gz' => 'application/gzip',
+                'wpress' => 'application/octet-stream'
             ];
-            if (!in_array($detectedMime, $inlineSafeMimes, true)) {
-                $detectedMime = 'application/octet-stream';
+            if (isset($extMap[$ext])) {
+                $detectedMime = $extMap[$ext];
             }
 
-            // Upload assembled file to Telegram Storage Channel
-            $tgChunk = $engine->uploadStorageChunk($assembledFile, $filename, "TeleDrive File: {$filename}");
-            $telegramChunks[] = [
-                'part'       => 1,
-                'message_id' => $tgChunk['message_id'],
-                'file_id'    => $tgChunk['file_id'],
-                'size'       => filesize($assembledFile),
-            ];
-
-            // Cleanup local temp files
-            Helpers::removeDir($uploadSessionDir);
-
-            // Register file in Index Channel with server-detected MIME type
+            // Register file in Index Channel
             $newEntry = $engine->createFileEntry([
                 'name'      => $filename,
-                'size'      => $fileSize ?: filesize($assembledFile),
+                'size'      => $fileSize,
                 'mime_type' => $detectedMime,
                 'parent_id' => $parentId,
-                'chunks'    => $telegramChunks,
+                'chunks'    => $normalizedChunks,
             ]);
 
             Helpers::success(['item' => $newEntry], 'File uploaded and indexed successfully.');

@@ -44,7 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
         folderPath: [{ id: 'root', name: 'My Drive' }],
         items: [],
         viewMode: 'grid', // 'grid' | 'list'
-        chunkSize: 10 * 1024 * 1024 // 10MB Chunks for rapid streaming upload
+        chunkSize: Math.floor(1.5 * 1024 * 1024) // 1.5MB Chunks (< 2M PHP upload_max_filesize limit)
     };
 
     // DOM Elements
@@ -866,29 +866,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function uploadSingleFile(file) {
         const uploadId = 'up_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        const totalChunks = Math.ceil(file.size / state.chunkSize) || 1;
-        const uploadController = new AbortController();
+        const chunkSize = state.chunkSize || 15 * 1024 * 1024;
+        const totalChunks = Math.ceil(file.size / chunkSize) || 1;
         let isCancelled = false;
+        let activeXhr = null;
 
-        // Create UI Item in queue with Cancel button
+        // Create UI Item in queue with Cancel button, Percentage, Size & Status indicators
         const qItem = document.createElement('div');
         qItem.className = 'td-queue-item';
         qItem.innerHTML = `
             <div class="td-queue-item-top">
-                <div class="td-queue-item-name">${escapeHtml(file.name)} (${formatBytes(file.size)})</div>
+                <div class="td-queue-item-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
                 <button class="td-queue-item-cancel" title="Cancel upload">✕ Cancel</button>
             </div>
             <div class="td-queue-progress-bar">
                 <div class="td-queue-progress-fill"></div>
             </div>
+            <div class="td-queue-item-meta">
+                <span class="td-queue-percent">0%</span>
+                <span class="td-queue-size">0 B / ${formatBytes(file.size)}</span>
+                <span class="td-queue-status">Starting...</span>
+            </div>
         `;
         queueItems.appendChild(qItem);
         const fillBar = qItem.querySelector('.td-queue-progress-fill');
         const cancelBtn = qItem.querySelector('.td-queue-item-cancel');
+        const percentLabel = qItem.querySelector('.td-queue-percent');
+        const sizeLabel = qItem.querySelector('.td-queue-size');
+        const statusLabel = qItem.querySelector('.td-queue-status');
 
         cancelBtn.onclick = () => {
             isCancelled = true;
-            uploadController.abort();
+            if (activeXhr) {
+                try { activeXhr.abort(); } catch (e) {}
+            }
             qItem.remove();
             TeleDrive.toast(`Upload cancelled: ${file.name}`, 'warning');
             if (queueItems.children.length === 0) {
@@ -896,61 +907,138 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
+        const collectedTelegramChunks = [];
+        const startTime = Date.now();
+        let totalUploadedBytes = 0;
+
         try {
             for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
                 if (isCancelled) return;
 
-                const start = chunkIdx * state.chunkSize;
-                const end = Math.min(start + state.chunkSize, file.size);
+                const start = chunkIdx * chunkSize;
+                const end = Math.min(start + chunkSize, file.size);
                 const chunkBlob = file.slice(start, end);
+                const chunkBytes = end - start;
 
-                const formData = new FormData();
-                formData.append('action', 'files.upload_chunk');
-                formData.append('upload_id', uploadId);
-                formData.append('chunk_index', chunkIdx);
-                formData.append('total_chunks', totalChunks);
-                formData.append('filename', file.name);
-                formData.append('chunk', chunkBlob, file.name);
+                statusLabel.textContent = totalChunks > 1 
+                    ? `Uploading chunk ${chunkIdx + 1} of ${totalChunks}...`
+                    : `Uploading to Telegram Cloud...`;
 
-                const res = await apiFetch('api/index.php', { 
-                    method: 'POST', 
-                    body: formData,
-                    signal: uploadController.signal
+                const chunkResult = await new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    activeXhr = xhr;
+
+                    xhr.upload.onprogress = (e) => {
+                        if (isCancelled) return;
+                        const currentChunkLoaded = e.lengthComputable ? e.loaded : 0;
+                        const overallLoaded = totalUploadedBytes + Math.min(currentChunkLoaded, chunkBytes);
+                        const percent = Math.min(98, Math.round((overallLoaded / file.size) * 100));
+
+                        fillBar.style.width = `${percent}%`;
+                        percentLabel.textContent = `${percent}%`;
+                        sizeLabel.textContent = `${formatBytes(overallLoaded)} / ${formatBytes(file.size)}`;
+
+                        const elapsedSec = (Date.now() - startTime) / 1000;
+                        if (elapsedSec > 0.5 && overallLoaded > 0) {
+                            const speedBytesPerSec = overallLoaded / elapsedSec;
+                            statusLabel.textContent = `Part ${chunkIdx + 1}/${totalChunks} • ${formatBytes(speedBytesPerSec)}/s`;
+                        }
+                    };
+
+                    xhr.onload = () => {
+                        activeXhr = null;
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            try {
+                                const json = JSON.parse(xhr.responseText);
+                                if (json && json.success) {
+                                    resolve(json);
+                                } else {
+                                    reject(new Error((json && json.error) || `Chunk ${chunkIdx + 1} upload failed`));
+                                }
+                            } catch (parseErr) {
+                                reject(new Error(`Server returned invalid response (HTTP ${xhr.status})`));
+                            }
+                        } else {
+                            let errorMsg = `HTTP error ${xhr.status}`;
+                            try {
+                                const errJson = JSON.parse(xhr.responseText);
+                                if (errJson && errJson.error) errorMsg = errJson.error;
+                            } catch (e) {}
+                            reject(new Error(errorMsg));
+                        }
+                    };
+
+                    xhr.onerror = () => {
+                        activeXhr = null;
+                        reject(new Error('Network error during chunk upload'));
+                    };
+
+                    xhr.onabort = () => {
+                        activeXhr = null;
+                        reject(new Error('Upload aborted'));
+                    };
+
+                    const formData = new FormData();
+                    formData.append('action', 'files.upload_chunk');
+                    formData.append('_csrf', getCsrfToken());
+                    formData.append('upload_id', uploadId);
+                    formData.append('chunk_index', chunkIdx);
+                    formData.append('total_chunks', totalChunks);
+                    formData.append('filename', file.name);
+                    formData.append('chunk', chunkBlob, file.name);
+
+                    xhr.open('POST', 'api/index.php?action=files.upload_chunk', true);
+                    xhr.setRequestHeader('X-CSRF-Token', getCsrfToken());
+                    xhr.send(formData);
                 });
-                const data = await res.json();
 
-                if (!data.success) {
-                    throw new Error(data.error || `Chunk ${chunkIdx + 1} upload failed`);
+                if (isCancelled) return;
+
+                if (chunkResult && chunkResult.chunk_data) {
+                    if (Array.isArray(chunkResult.chunk_data)) {
+                        collectedTelegramChunks.push(...chunkResult.chunk_data);
+                    } else {
+                        collectedTelegramChunks.push(chunkResult.chunk_data);
+                    }
                 }
+                totalUploadedBytes += chunkBytes;
 
-                // Update Progress
-                const progress = Math.round(((chunkIdx + 1) / totalChunks) * 90);
-                fillBar.style.width = `${progress}%`;
+                const overallPercent = Math.min(99, Math.round((totalUploadedBytes / file.size) * 100));
+                fillBar.style.width = `${overallPercent}%`;
+                percentLabel.textContent = `${overallPercent}%`;
+                sizeLabel.textContent = `${formatBytes(totalUploadedBytes)} / ${formatBytes(file.size)}`;
             }
 
             if (isCancelled) return;
 
-            // Complete and Send to Telegram Storage Channel
-            const completeData = new FormData();
-            completeData.append('action', 'files.complete_upload');
-            completeData.append('upload_id', uploadId);
-            completeData.append('filename', file.name);
-            completeData.append('size', file.size);
-            completeData.append('mime_type', file.type || 'application/octet-stream');
-            completeData.append('parent_id', state.currentFolderId);
-            completeData.append('total_chunks', totalChunks);
+            statusLabel.textContent = 'Registering with Telegram Index...';
 
-            const completeRes = await apiFetch('api/index.php', { 
-                method: 'POST', 
-                body: completeData,
-                signal: uploadController.signal
+            // Complete upload and register file in Index Channel
+            const completeFormData = new FormData();
+            completeFormData.append('action', 'files.complete_upload');
+            completeFormData.append('_csrf', getCsrfToken());
+            completeFormData.append('upload_id', uploadId);
+            completeFormData.append('filename', file.name);
+            completeFormData.append('size', file.size);
+            completeFormData.append('parent_id', state.currentFolderId);
+            completeFormData.append('total_chunks', totalChunks);
+            completeFormData.append('chunks', JSON.stringify(collectedTelegramChunks));
+
+            const completeRes = await apiFetch('api/index.php?action=files.complete_upload', {
+                method: 'POST',
+                body: completeFormData
             });
+
             const completeResult = await completeRes.json();
 
             if (completeResult.success) {
                 fillBar.style.width = '100%';
+                percentLabel.textContent = '100%';
+                sizeLabel.textContent = `${formatBytes(file.size)} / ${formatBytes(file.size)}`;
+                statusLabel.textContent = 'Completed!';
                 cancelBtn.style.display = 'none';
                 TeleDrive.toast(`Uploaded: ${file.name}`, 'success');
+
                 setTimeout(() => {
                     qItem.style.opacity = '0';
                     qItem.style.transform = 'translateX(20px)';
@@ -960,14 +1048,17 @@ document.addEventListener('DOMContentLoaded', () => {
                             uploadQueue.style.display = 'none';
                         }
                     }, 300);
-                }, 1200);
+                }, 1500);
             } else {
-                throw new Error(completeResult.error || 'Failed to complete Telegram storage upload');
+                throw new Error(completeResult.error || 'Failed to complete Telegram storage indexing');
             }
+
         } catch (err) {
             if (!isCancelled) {
                 TeleDrive.toast(`Upload failed for ${file.name}: ${err.message}`, 'error');
                 fillBar.style.backgroundColor = 'var(--color-danger)';
+                statusLabel.textContent = 'Failed';
+                statusLabel.style.color = 'var(--color-danger)';
             }
         }
     }

@@ -812,7 +812,7 @@
 }
 
 .td-queue-progress-bar {
-  height: 5px;
+  height: 6px;
   background: var(--bg-surface);
   border-radius: var(--radius-full);
   overflow: hidden;
@@ -822,7 +822,34 @@
   height: 100%;
   background: var(--color-accent-gradient);
   width: 0%;
-  transition: width 0.2s ease;
+  transition: width 0.15s ease;
+  box-shadow: 0 0 8px var(--color-primary-glow);
+}
+
+.td-queue-item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.td-queue-percent {
+  color: var(--color-primary);
+  font-weight: var(--font-weight-semibold);
+  font-feature-settings: "tnum";
+}
+
+.td-queue-size {
+  color: var(--text-secondary);
+}
+
+.td-queue-status {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Preview Modal */
