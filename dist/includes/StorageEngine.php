@@ -556,23 +556,69 @@ class StorageEngine {
         }
 
         // 5. Handle channel state
+        $deltaCount = (int)($index['delta_count'] ?? 0);
+
         if (empty($remainingItems)) {
             // If ALL items in the Drive are deleted, cleanly reset the pinned document to an empty manifest
-            if ($pinnedMsgId > 0) {
-                $this->telegram->unpinChatMessage($this->indexChannel, $pinnedMsgId);
-                $this->telegram->deleteMessage($this->indexChannel, $pinnedMsgId);
-            }
+            $oldPinnedId = $pinnedMsgId;
             $newPinnedId = $this->rebuildAndPinManifest([]);
+
+            // Unpin old pinned manifest and batch delete EVERYTHING above the new pin (old pin, old deltas, tombstones)
+            $messagesToPurge = [];
+            if ($oldPinnedId > 0) {
+                $this->telegram->unpinChatMessage($this->indexChannel, $oldPinnedId);
+                $messagesToPurge[] = $oldPinnedId;
+                if ($newPinnedId > $oldPinnedId + 1) {
+                    $messagesToPurge = array_merge($messagesToPurge, range($oldPinnedId + 1, $newPinnedId - 1));
+                }
+            }
+            if (!empty($messagesToPurge)) {
+                try {
+                    $this->telegram->deleteMessagesBatch($this->indexChannel, array_unique($messagesToPurge));
+                } catch (Exception $e) {
+                    error_log("Failed to purge old index messages on reset: " . $e->getMessage());
+                }
+            }
+
             $index['pinned_message_id'] = $newPinnedId;
             $index['delta_count'] = 0;
+            unset($index['pending_purge']);
         } elseif (!empty($tombstoneItemIds)) {
-            // Post ONE single batched tombstone message into the index channel instead of N separate calls
+            // Post ONE single batched tombstone message into the index channel
             try {
                 $tombstonePayload = json_encode(['tombstones' => array_values($tombstoneItemIds)]);
-                $this->telegram->sendMessage($this->indexChannel, "<code>" . htmlspecialchars($tombstonePayload) . "</code>");
+                $tRes = $this->telegram->sendMessage($this->indexChannel, "<code>" . htmlspecialchars($tombstonePayload) . "</code>");
+                $deltaCount++;
+
+                // If tombstone pushes delta count to 50, compact and purge immediately
+                if ($deltaCount >= self::COMPACTION_THRESHOLD) {
+                    $oldPinnedId = $pinnedMsgId;
+                    $newPinnedId = $this->rebuildAndPinManifest($remainingItems);
+                    if ($newPinnedId > 0) {
+                        $messagesToPurge = [];
+                        if ($oldPinnedId > 0 && $oldPinnedId !== $newPinnedId) {
+                            $this->telegram->unpinChatMessage($this->indexChannel, $oldPinnedId);
+                            $messagesToPurge[] = $oldPinnedId;
+                            if ($newPinnedId > $oldPinnedId + 1) {
+                                $messagesToPurge = array_merge($messagesToPurge, range($oldPinnedId + 1, $newPinnedId - 1));
+                            }
+                        }
+                        if (!empty($messagesToPurge)) {
+                            $this->telegram->deleteMessagesBatch($this->indexChannel, array_unique($messagesToPurge));
+                        }
+                        $pinnedMsgId = $newPinnedId;
+                        $deltaCount = 0;
+                    }
+                }
             } catch (Exception $e) {
                 error_log("Failed to post batched tombstone message: " . $e->getMessage());
             }
+
+            $index['pinned_message_id'] = $pinnedMsgId;
+            $index['delta_count'] = $deltaCount;
+        } else {
+            $index['pinned_message_id'] = $pinnedMsgId;
+            $index['delta_count'] = $deltaCount;
         }
 
         // 6. Update local cache atomically
