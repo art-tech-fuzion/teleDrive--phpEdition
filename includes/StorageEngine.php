@@ -30,7 +30,7 @@ class StorageEngine {
     private string $indexChannel;
     private string $storageChannel;
     // msg threshold 
-    const COMPACTION_THRESHOLD = 50; 
+    const COMPACTION_THRESHOLD = 10; 
     const MANIFEST_FILENAME = 'master_manifest.json';
     const CACHE_FILE = 'index_cache.json';
 
@@ -524,15 +524,14 @@ class StorageEngine {
                     }
                 }
 
-                // 2. Classify Index Channel deletion vs tombstone
+                // 2. If this item has a delta message above the pin (e.g. from upload or rename), queue it for deletion
                 $msgId = (int)($item['index_message_id'] ?? 0);
                 if ($msgId > $pinnedMsgId) {
-                    // Message is in current delta stream -> queue for parallel batch deletion
                     $deltaIndexMsgIds[] = $msgId;
-                } else {
-                    // Item was in older pinned manifest -> queue for tombstoning
-                    $tombstoneItemIds[] = $item['id'];
                 }
+
+                // 3. ALWAYS queue for tombstoning so any occurrence in older pinned manifest is neutralized
+                $tombstoneItemIds[] = $item['id'];
             } else {
                 $remainingItems[] = $item;
             }
