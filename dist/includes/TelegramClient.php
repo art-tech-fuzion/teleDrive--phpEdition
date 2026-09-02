@@ -45,7 +45,11 @@ class TelegramClient {
             curl_setopt($this->ch, CURLOPT_CONNECTTIMEOUT, 10);
             curl_setopt($this->ch, CURLOPT_TIMEOUT, 45);
             curl_setopt($this->ch, CURLOPT_TCP_KEEPALIVE, 1);
+            curl_setopt($this->ch, CURLOPT_TCP_NODELAY, 1);
             curl_setopt($this->ch, CURLOPT_FORBID_REUSE, 0);
+            if (defined('CURL_HTTP_VERSION_2_0')) {
+                curl_setopt($this->ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+            }
         }
 
         curl_setopt($this->ch, CURLOPT_URL, $url);
@@ -324,8 +328,8 @@ class TelegramClient {
         $docUrl = $this->apiUrl . 'sendDocument';
         $results = [];
 
-        // Upload in concurrent windows of 3 to maximize throughput and respect rate limits
-        $windows = array_chunk($documents, 3, true);
+        // Upload in concurrent windows of 4 to maximize throughput and respect rate limits
+        $windows = array_chunk($documents, 4, true);
 
         foreach ($windows as $window) {
             $mh = curl_multi_init();
@@ -341,6 +345,11 @@ class TelegramClient {
                 curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
                 curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
                 curl_setopt($ch, CURLOPT_TIMEOUT, 180);
+                curl_setopt($ch, CURLOPT_TCP_NODELAY, 1);
+                curl_setopt($ch, CURLOPT_BUFFERSIZE, 131072);
+                if (defined('CURL_HTTP_VERSION_2_0')) {
+                    curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+                }
                 curl_setopt($ch, CURLOPT_POST, true);
 
                 $cFile = new CURLFile($doc['path'], mime_content_type($doc['path']) ?: 'application/octet-stream', $doc['filename']);
